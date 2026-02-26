@@ -1,0 +1,7 @@
+faster-whisper
+pyaudio
+pynput
+openai
+
+# Optional:
+# anthropic  — only needed when provider=claude
