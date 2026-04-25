@@ -80,9 +80,9 @@ PHASE_VISUALS = {
 }
 
 PREVIEW_MAX = 34
-MAX_ROWS = 5
+MAX_ROWS = 3
 WINDOW_W = 340
-WINDOW_MAIN_H = 320
+WINDOW_MAIN_H = 250
 WINDOW_SETTINGS_H = 420
 
 # ─── Main Application ────────────────────────────────────────────────────────
