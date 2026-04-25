@@ -2,17 +2,29 @@
 """
 Voxkeys — Core engine + CLI entry point
 Hold hotkey to record → Whisper transcription → LLM polish → paste to cursor
+
+Pipeline architecture:
+- Press F9 → Recorder thread starts capturing audio (per-press PyAudio instance).
+- Release F9 → Job is enqueued; user can immediately press F9 again to record the
+  next segment while the worker is still transcribing/polishing the previous one.
+- A single worker thread drains the queue (FIFO) so paste-back order matches the
+  order segments were spoken.
 """
 
 import os
 import sys
 import time
 import wave
+import queue
 import tempfile
 import subprocess
 import threading
 import shutil
 import argparse
+import itertools
+from dataclasses import dataclass, field
+from typing import Optional, Callable, List
+
 import pyaudio
 from pynput import keyboard
 from faster_whisper import WhisperModel
@@ -74,52 +86,167 @@ The user's speech has already been transcribed by a speech recognition system. Y
 
 Keep technical terms and code-related content unchanged."""
 
-# ─── Global State ────────────────────────────────────────────────────────────
+# ─── Job & Events ────────────────────────────────────────────────────────────
 
-recording = False
-audio_frames = []
-whisper_model = None
-status_callback = None
+# Phases:
+#   recording      — audio capture in progress
+#   queued         — released, waiting for worker
+#   loading_model  — first job triggers Whisper model load
+#   transcribing   — Whisper running
+#   transcribed    — raw text ready (transient)
+#   polishing      — LLM polish in progress
+#   done           — text pasted; row is clickable to recopy
+#   empty          — recording was empty / no speech detected
+#   polish_failed  — LLM call failed; raw text was pasted instead
+#   error          — unrecoverable error in pipeline
+
+
+@dataclass
+class Job:
+    id: int
+    frames: List[bytes] = field(default_factory=list)
+    language: Optional[str] = None
+    provider: str = "github"
+    raw_text: str = ""
+    polished_text: str = ""
+    phase: str = "recording"
+    error: str = ""
+
+
+_job_counter = itertools.count(1)
+_event_callback: Optional[Callable] = None
+_status_callback: Optional[Callable] = None
+
+
+def set_event_callback(fn):
+    """Register a structured-event callback. fn receives a dict per phase change."""
+    global _event_callback
+    _event_callback = fn
 
 
 def set_status_callback(fn):
-    """Register a status callback (used by GUI)."""
-    global status_callback
-    status_callback = fn
+    """Legacy single-line callback. Prefer set_event_callback for richer events."""
+    global _status_callback
+    _status_callback = fn
 
 
-def _notify(msg):
-    """Notify GUI or print to CLI."""
-    if status_callback:
-        status_callback(msg)
-    else:
-        print(msg)
+def _emit(job: Optional[Job], phase: str, **extra):
+    """Update a job's phase and notify subscribers."""
+    if job is not None:
+        job.phase = phase
 
-# ─── Recording ───────────────────────────────────────────────────────────────
+    if _event_callback:
+        payload = {"job_id": job.id if job else None, "phase": phase}
+        if job is not None:
+            payload.update({
+                "raw_text": job.raw_text,
+                "polished_text": job.polished_text,
+                "error": job.error,
+            })
+        payload.update(extra)
+        try:
+            _event_callback(payload)
+        except Exception:
+            pass
 
-def record_audio():
-    """Record in background until recording = False."""
-    global audio_frames
-    audio_frames = []
+    if _status_callback:
+        legacy = _legacy_status_for(job, phase, extra)
+        if legacy is not None:
+            try:
+                _status_callback(legacy)
+            except Exception:
+                pass
 
-    p = pyaudio.PyAudio()
-    stream = p.open(
-        format=pyaudio.paInt16,
-        channels=CONFIG["channels"],
-        rate=CONFIG["sample_rate"],
-        input=True,
-        frames_per_buffer=1024,
-    )
+    if not _event_callback and not _status_callback:
+        # CLI fallback — emit a compact line so users can see pipeline progress.
+        prefix = f"[#{job.id}] " if job else ""
+        if phase == "transcribed":
+            print(f"{prefix}transcribed: {job.raw_text}")
+        elif phase == "done":
+            print(f"{prefix}done: {job.polished_text}")
+        elif phase == "error":
+            print(f"{prefix}error: {job.error}")
+        else:
+            print(f"{prefix}{phase}")
 
-    _notify("recording")
-    while recording:
-        data = stream.read(1024, exception_on_overflow=False)
-        audio_frames.append(data)
 
-    stream.stop_stream()
-    stream.close()
-    p.terminate()
-    _notify("recording_done")
+def _legacy_status_for(job, phase, extra):
+    """Map a structured event to the legacy status_callback strings."""
+    if phase == "recording":
+        return "recording"
+    if phase == "queued":
+        return "recording_done"
+    if phase == "loading_model":
+        return "loading_model"
+    if phase == "transcribing":
+        return "transcribing"
+    if phase == "transcribed" and job:
+        return f"transcribed:{job.raw_text}"
+    if phase == "polishing":
+        return "polishing"
+    if phase == "done" and job:
+        return f"output:{job.polished_text}"
+    if phase == "empty":
+        return "no_speech"
+    if phase == "polish_failed" and job:
+        return f"polish_failed:{job.error}"
+    if phase == "error" and job:
+        return f"error:{job.error}"
+    return None
+
+
+# ─── Recorder ────────────────────────────────────────────────────────────────
+
+
+class Recorder:
+    """One Recorder per F9 press. Captures into its own job.frames buffer."""
+
+    def __init__(self, job: Job):
+        self.job = job
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout: float = 2.0):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=timeout)
+
+    def _run(self):
+        p = pyaudio.PyAudio()
+        stream = None
+        try:
+            stream = p.open(
+                format=pyaudio.paInt16,
+                channels=CONFIG["channels"],
+                rate=CONFIG["sample_rate"],
+                input=True,
+                frames_per_buffer=1024,
+            )
+        except Exception as e:
+            self.job.error = type(e).__name__
+            _emit(self.job, "error")
+            p.terminate()
+            return
+
+        try:
+            while not self._stop.is_set():
+                try:
+                    data = stream.read(1024, exception_on_overflow=False)
+                except Exception:
+                    break
+                self.job.frames.append(data)
+        finally:
+            try:
+                if stream is not None:
+                    stream.stop_stream()
+                    stream.close()
+            except Exception:
+                pass
+            p.terminate()
 
 
 def save_audio_to_wav(frames):
@@ -132,40 +259,90 @@ def save_audio_to_wav(frames):
         wf.writeframes(b"".join(frames))
     return tmp.name
 
+
 # ─── Transcription ───────────────────────────────────────────────────────────
 
-def transcribe(wav_path):
-    """Transcribe audio with faster-whisper."""
+# Known Whisper hallucination phrases (Chinese subtitle watermarks, etc.)
+HALLUCINATION_PATTERNS = [
+    "字幕by索兰娅",
+    "字幕by索蘭婭",
+    "索兰娅",
+    "索蘭婭",
+    "字幕提供",
+    "字幕制作",
+    "字幕製作",
+    "请不吝点赞",
+    "請不吝點贊",
+    "订阅我的频道",
+    "訂閱我的頻道",
+    "感谢观看",
+    "感謝觀看",
+    "谢谢观看",
+    "謝謝觀看",
+    "欢迎订阅",
+    "歡迎訂閱",
+    "thank you for watching",
+    "thanks for watching",
+    "please subscribe",
+    "like and subscribe",
+]
+
+NO_SPEECH_PROB_THRESHOLD = 0.6
+
+
+def _is_hallucination(text):
+    normalized = text.strip().lower().replace(" ", "")
+    for pattern in HALLUCINATION_PATTERNS:
+        if pattern.replace(" ", "").lower() in normalized:
+            return True
+    return False
+
+
+# Single shared model instance — loaded lazily, used only by the worker thread
+# (faster-whisper's WhisperModel is not safe under concurrent transcribe calls).
+whisper_model = None
+
+
+def _transcribe_job(job: Job, wav_path: str) -> str:
     global whisper_model
 
     if whisper_model is None:
-        _notify("loading_model")
+        _emit(job, "loading_model")
         whisper_model = WhisperModel(
             CONFIG["whisper_model"],
             device="cpu",
             compute_type="int8",
         )
 
-    _notify("transcribing")
-    # Whisper only understands "zh", not "zh-cn"
-    whisper_lang = CONFIG["language"]
+    _emit(job, "transcribing")
+    whisper_lang = job.language
     if whisper_lang == "zh-cn":
         whisper_lang = "zh"
-    segments, info = whisper_model.transcribe(
+    segments, _info = whisper_model.transcribe(
         wav_path,
         language=whisper_lang,
         beam_size=5,
         vad_filter=True,
+        condition_on_previous_text=False,
     )
 
-    text = " ".join(seg.text.strip() for seg in segments)
-    _notify(f"transcribed:{text}")
-    return text
+    filtered = []
+    for seg in segments:
+        text = seg.text.strip()
+        if not text:
+            continue
+        if seg.no_speech_prob > NO_SPEECH_PROB_THRESHOLD:
+            continue
+        if _is_hallucination(text):
+            continue
+        filtered.append(text)
+
+    return " ".join(filtered)
+
 
 # ─── LLM Polish ──────────────────────────────────────────────────────────────
 
 def polish_with_claude(text, prompt):
-    """Polish text using Claude API."""
     import anthropic
     client = anthropic.Anthropic(api_key=CONFIG["anthropic_api_key"])
     message = client.messages.create(
@@ -178,7 +355,6 @@ def polish_with_claude(text, prompt):
 
 
 def polish_with_github(text, prompt):
-    """Polish text using GitHub Models API (free, OpenAI-compatible)."""
     import openai
     client = openai.OpenAI(
         api_key=CONFIG["github_token"],
@@ -195,7 +371,6 @@ def polish_with_github(text, prompt):
 
 
 def polish_with_openai(text, prompt):
-    """Polish text using OpenAI API."""
     import openai
     client = openai.OpenAI(api_key=CONFIG["openai_api_key"])
     response = client.chat.completions.create(
@@ -208,31 +383,23 @@ def polish_with_openai(text, prompt):
     return response.choices[0].message.content.strip()
 
 
-def polish(text):
-    """Route to the configured LLM provider."""
-    if not text.strip():
+def _polish_job(job: Job, text: str) -> str:
+    if not text.strip() or job.provider == "none":
         return text
-
-    provider = CONFIG.get("provider", CONFIG.get("llm_provider", "github"))
-
-    if provider == "none":
-        return text
-
-    _notify("polishing")
-    prompt = build_system_prompt(CONFIG.get("language"))
+    _emit(job, "polishing")
+    prompt = build_system_prompt(job.language)
     try:
-        if provider == "claude":
+        if job.provider == "claude":
             return polish_with_claude(text, prompt)
-        elif provider == "openai":
+        if job.provider == "openai":
             return polish_with_openai(text, prompt)
-        elif provider == "github":
+        if job.provider == "github":
             return polish_with_github(text, prompt)
-        else:
-            return text
     except Exception as e:
-        # Only print exception type to avoid leaking API keys
-        _notify(f"polish_failed:{type(e).__name__}")
-        return text
+        job.error = type(e).__name__
+        _emit(job, "polish_failed")
+    return text
+
 
 # ─── Output to Cursor ────────────────────────────────────────────────────────
 
@@ -241,28 +408,40 @@ def output_text(text):
     if not text:
         return
 
-    _notify(f"output:{text}")
-
     if CONFIG["output_mode"] == "clipboard":
         process = subprocess.Popen(
             ["xclip", "-selection", "clipboard"],
-            stdin=subprocess.PIPE
+            stdin=subprocess.PIPE,
         )
         process.communicate(text.encode("utf-8"))
         time.sleep(0.3)
 
-        # Detect if target is a terminal, use matching paste shortcut
         is_terminal = False
         try:
-            wid = subprocess.run(["xdotool", "getactivewindow"],
-                                 capture_output=True, text=True).stdout.strip()
-            result = subprocess.run(["xprop", "-id", wid, "WM_CLASS"],
-                                    capture_output=True, text=True)
+            wid = subprocess.run(
+                ["xdotool", "getactivewindow"],
+                capture_output=True, text=True,
+            ).stdout.strip()
+            result = subprocess.run(
+                ["xprop", "-id", wid, "WM_CLASS"],
+                capture_output=True, text=True,
+            )
             wm_class = result.stdout.lower()
-            terminal_names = ("gnome-terminal", "xfce4-terminal", "konsole",
-                              "xterm", "alacritty", "kitty", "terminator",
-                              "tilix", "lxterminal", "mate-terminal")
-            is_terminal = any(t in wm_class for t in terminal_names)
+            title_result = subprocess.run(
+                ["xdotool", "getwindowname", wid],
+                capture_output=True, text=True,
+            )
+            window_title = title_result.stdout.lower()
+            terminal_names = (
+                "gnome-terminal", "xfce4-terminal", "konsole",
+                "xterm", "alacritty", "kitty", "terminator",
+                "tilix", "lxterminal", "mate-terminal",
+                "agent-deck", "agent_deck",
+            )
+            is_terminal = (
+                any(t in wm_class for t in terminal_names)
+                or any(t in window_title for t in terminal_names)
+            )
         except Exception:
             pass
 
@@ -270,44 +449,110 @@ def output_text(text):
             subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"])
         else:
             subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+v"])
-
     else:
         ctrl = keyboard.Controller()
         ctrl.type(text)
 
+
+# ─── Worker Thread ───────────────────────────────────────────────────────────
+
+_job_queue: "queue.Queue[Job]" = queue.Queue()
+_worker_started = False
+_worker_lock = threading.Lock()
+
+
+def _ensure_worker():
+    global _worker_started
+    with _worker_lock:
+        if _worker_started:
+            return
+        t = threading.Thread(target=_worker_loop, daemon=True)
+        t.start()
+        _worker_started = True
+
+
+def _worker_loop():
+    while True:
+        job = _job_queue.get()
+        try:
+            _process_job(job)
+        except Exception as e:
+            job.error = type(e).__name__
+            _emit(job, "error")
+        finally:
+            _job_queue.task_done()
+
+
+def _process_job(job: Job):
+    if not job.frames:
+        _emit(job, "empty")
+        return
+    wav_path = save_audio_to_wav(job.frames)
+    try:
+        text = _transcribe_job(job, wav_path)
+        job.raw_text = text
+        if not text.strip():
+            _emit(job, "empty")
+            return
+        _emit(job, "transcribed")
+        polished = _polish_job(job, text)
+        job.polished_text = polished
+        output_text(polished)
+        # If polish raised, _polish_job already emitted "polish_failed" — keep
+        # that phase so the GUI shows the row as a fallback (raw text pasted),
+        # not a clean success.
+        if job.phase != "polish_failed":
+            _emit(job, "done")
+    finally:
+        try:
+            os.unlink(wav_path)
+        except Exception:
+            pass
+
+
 # ─── Hotkey Logic ────────────────────────────────────────────────────────────
 
+_active_recorder: Optional[Recorder] = None
+_recorder_lock = threading.Lock()
+
+
 def on_press(key):
-    global recording
-    if key == CONFIG["hotkey"] and not recording:
-        recording = True
-        t = threading.Thread(target=record_audio, daemon=True)
-        t.start()
+    """F9 down — start a new recorder for this segment."""
+    global _active_recorder
+    if key != CONFIG["hotkey"]:
+        return
+    with _recorder_lock:
+        if _active_recorder is not None:
+            return
+        job = Job(
+            id=next(_job_counter),
+            language=CONFIG.get("language"),
+            provider=CONFIG.get("provider", CONFIG.get("llm_provider", "github")),
+        )
+        _active_recorder = Recorder(job)
+        _ensure_worker()
+        _emit(job, "recording")
+        _active_recorder.start()
 
 
 def on_release(key):
-    global recording
-    if key == CONFIG["hotkey"] and recording:
-        recording = False
-        time.sleep(0.1)
+    """F9 up — close out this segment's recorder and enqueue the job."""
+    global _active_recorder
+    if key != CONFIG["hotkey"]:
+        return
+    with _recorder_lock:
+        recorder = _active_recorder
+        _active_recorder = None
+    if recorder is None:
+        return
+    recorder.stop()
+    job = recorder.job
+    if not job.frames:
+        _emit(job, "empty")
+        return
+    _emit(job, "queued")
+    _job_queue.put(job)
 
-        frames = audio_frames.copy()
-        if not frames:
-            return
-
-        def process():
-            wav_path = save_audio_to_wav(frames)
-            try:
-                raw_text = transcribe(wav_path)
-                if raw_text.strip():
-                    polished = polish(raw_text)
-                    output_text(polished)
-                else:
-                    _notify("no_speech")
-            finally:
-                os.unlink(wav_path)
-
-        threading.Thread(target=process, daemon=True).start()
 
 # ─── CLI Entry Point ─────────────────────────────────────────────────────────
 
@@ -328,20 +573,17 @@ def main():
                         help="Output mode")
     args = parser.parse_args()
 
-    # CLI args override config
     CONFIG["whisper_model"] = args.model
     CONFIG["language"] = args.lang if args.lang != "auto" else None
     CONFIG["provider"] = args.provider
     CONFIG["output_mode"] = args.output
 
-    # Check system dependencies
     missing = check_dependencies()
     if missing:
         print(f"Missing system tools: {', '.join(missing)}")
         print(f"Install with: sudo apt install {' '.join(missing)}")
         sys.exit(1)
 
-    # Check API key
     if CONFIG["provider"] == "claude" and not CONFIG["anthropic_api_key"]:
         print("Please set ANTHROPIC_API_KEY (env var or ~/.config/voxkeys/config.json)")
         sys.exit(1)
