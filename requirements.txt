@@ -2,6 +2,8 @@ faster-whisper
 pyaudio
 pynput
 openai
+requests
 
 # Optional:
 # anthropic  — only needed when provider=claude
+# opencc-python-reimplemented  — for zh-CN → zh-TW auto-normalize (no-LLM path)

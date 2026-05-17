@@ -89,7 +89,7 @@ PREVIEW_MAX = 30  # visual cells (CJK counts as 2)
 MAX_ROWS = 3
 WINDOW_W = 340
 WINDOW_MAIN_H = 250
-WINDOW_SETTINGS_H = 540
+WINDOW_SETTINGS_H = 720
 TOOLTIP_DELAY_MS = 450
 
 # Short codes for the lang-flow badge on the main page.
@@ -158,6 +158,9 @@ class VoxkeysApp:
         voxkeys.CONFIG["github_token"] = self.cfg["github_token"]
         voxkeys.CONFIG["openai_api_key"] = self.cfg["openai_api_key"]
         voxkeys.CONFIG["anthropic_api_key"] = self.cfg["anthropic_api_key"]
+        voxkeys.CONFIG["stt_provider"] = self.cfg.get("stt_provider", "local")
+        voxkeys.CONFIG["groq_api_key"] = self.cfg.get("groq_api_key", "")
+        voxkeys.CONFIG["per_app_prompts"] = bool(self.cfg.get("per_app_prompts", False))
 
     # ─── Main Page ───────────────────────────────────────────────────────────
 
@@ -667,6 +670,12 @@ class VoxkeysApp:
     }
     OUTPUT_LANG_FROM_LABEL = {v: k for k, v in OUTPUT_LANG_LABELS.items()}
 
+    STT_PROVIDER_LABELS = {
+        "local": "Local Whisper (faster-whisper, CPU)",
+        "groq":  "Groq Cloud (whisper-large-v3)",
+    }
+    STT_PROVIDER_FROM_LABEL = {v: k for k, v in STT_PROVIDER_LABELS.items()}
+
     def _build_settings_page(self):
         self._clear()
         self._resize(WINDOW_W, WINDOW_SETTINGS_H)
@@ -720,12 +729,34 @@ class VoxkeysApp:
         # ─── Speech section ─────────────────────────────────────────────────
         self._section_header(form, "Speech Recognition", top_pad=4)
 
-        # Whisper Model
-        self._form_label(form, "Whisper Model (local)")
+        # STT provider
+        self._form_label(form, "STT Backend")
+        stt_display = self.STT_PROVIDER_LABELS.get(
+            self.cfg.get("stt_provider", "local"), "Local Whisper (faster-whisper, CPU)"
+        )
+        self.stt_var = tk.StringVar(value=stt_display)
+        ttk.Combobox(form, textvariable=self.stt_var,
+                     values=list(self.STT_PROVIDER_LABELS.values()),
+                     state="readonly", width=28).pack(fill="x", pady=(0, 12))
+
+        # Whisper Model (local)
+        self._form_label(form, "Whisper Model (local backend)")
         self.model_var = tk.StringVar(value=self.cfg["whisper_model"])
         ttk.Combobox(form, textvariable=self.model_var,
                      values=["tiny", "base", "small", "medium", "large-v3"],
                      state="readonly", width=28).pack(fill="x", pady=(0, 12))
+
+        # Groq API key (used when STT backend = groq)
+        self._form_label(form, "Groq API Key (cloud backend)")
+        self.groq_var = tk.StringVar(value=self.cfg.get("groq_api_key", ""))
+        tk.Entry(form, textvariable=self.groq_var, show="•",
+                 font=("monospace", 10),
+                 bg=C["surface0"], fg=C["text"],
+                 insertbackground=C["text"],
+                 relief="flat", bd=0,
+                 highlightthickness=1,
+                 highlightcolor=C["blue"],
+                 highlightbackground=C["surface1"]).pack(fill="x", ipady=4, pady=(0, 12))
 
         # ─── Language section ───────────────────────────────────────────────
         self._section_header(form, "Languages", top_pad=4)
@@ -745,7 +776,18 @@ class VoxkeysApp:
         self.output_lang_var = tk.StringVar(value=out_lang_display)
         ttk.Combobox(form, textvariable=self.output_lang_var,
                      values=list(self.OUTPUT_LANG_LABELS.values()),
-                     state="readonly", width=28).pack(fill="x", pady=(0, 16))
+                     state="readonly", width=28).pack(fill="x", pady=(0, 12))
+
+        # Per-app prompt toggle — adapt tone to the active window's app.
+        self.per_app_var = tk.BooleanVar(value=bool(self.cfg.get("per_app_prompts", False)))
+        tk.Checkbutton(
+            form, text="Adapt tone per app (terminal / chat / email / code)",
+            variable=self.per_app_var,
+            font=("sans-serif", 9), bg=C["base"], fg=C["text"],
+            selectcolor=C["surface0"], activebackground=C["base"],
+            activeforeground=C["text"], cursor="hand2",
+            anchor="w",
+        ).pack(fill="x", pady=(0, 16))
 
         save_btn = tk.Button(form, text="Save", font=("sans-serif", 10, "bold"),
                              bg=C["mauve"], fg=C["crust"], bd=0, cursor="hand2",
@@ -798,12 +840,16 @@ class VoxkeysApp:
         out_lang = self.OUTPUT_LANG_FROM_LABEL.get(
             self.output_lang_var.get(), ""
         )
+        stt = self.STT_PROVIDER_FROM_LABEL.get(self.stt_var.get(), "local")
 
         updates = {
             "provider": provider,
             "whisper_model": self.model_var.get(),
             "language": lang,
             "output_language": out_lang,
+            "stt_provider": stt,
+            "groq_api_key": self.groq_var.get(),
+            "per_app_prompts": bool(self.per_app_var.get()),
         }
         if key_field:
             updates[key_field] = self.key_var.get()

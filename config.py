@@ -18,6 +18,12 @@ DEFAULT_CONFIG = {
     "whisper_model": "small",
     "language": "zh",
     "output_language": "",
+    # STT backend: "local" (faster-whisper on CPU) or "groq" (cloud whisper-large-v3).
+    "stt_provider": "local",
+    "groq_api_key": "",
+    # Per-app prompts: when on, voxkeys detects the active window and adapts tone
+    # (terminal / chat / email / code / social).
+    "per_app_prompts": False,
 }
 
 
@@ -44,6 +50,8 @@ def load_config():
         config["openai_api_key"] = os.environ.get("OPENAI_API_KEY", "")
     if not config["anthropic_api_key"]:
         config["anthropic_api_key"] = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not config["groq_api_key"]:
+        config["groq_api_key"] = os.environ.get("GROQ_API_KEY", "")
 
     return config
 
