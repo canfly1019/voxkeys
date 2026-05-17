@@ -17,6 +17,7 @@ DEFAULT_CONFIG = {
     "anthropic_api_key": "",
     "whisper_model": "small",
     "language": "zh",
+    "output_language": "",
 }
 
 

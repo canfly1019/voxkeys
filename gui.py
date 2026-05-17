@@ -89,8 +89,19 @@ PREVIEW_MAX = 30  # visual cells (CJK counts as 2)
 MAX_ROWS = 3
 WINDOW_W = 340
 WINDOW_MAIN_H = 250
-WINDOW_SETTINGS_H = 420
+WINDOW_SETTINGS_H = 540
 TOOLTIP_DELAY_MS = 450
+
+# Short codes for the lang-flow badge on the main page.
+LANG_SHORT = {
+    "auto":  "Auto",
+    None:    "Auto",
+    "":      "Auto",
+    "zh":    "中",
+    "zh-cn": "简",
+    "en":    "EN",
+    "ja":    "JP",
+}
 
 # ─── Main Application ────────────────────────────────────────────────────────
 
@@ -141,6 +152,8 @@ class VoxkeysApp:
         voxkeys.CONFIG["whisper_model"] = self.cfg["whisper_model"]
         lang = self.cfg["language"]
         voxkeys.CONFIG["language"] = None if lang == "auto" else lang
+        out_lang = self.cfg.get("output_language", "")
+        voxkeys.CONFIG["output_language"] = "" if out_lang in ("", "same") else out_lang
         voxkeys.CONFIG["provider"] = self.cfg["provider"] if self.use_ai else "none"
         voxkeys.CONFIG["github_token"] = self.cfg["github_token"]
         voxkeys.CONFIG["openai_api_key"] = self.cfg["openai_api_key"]
@@ -217,6 +230,15 @@ class VoxkeysApp:
         )
         self.provider_label.pack(side="left", padx=(8, 0))
 
+        # Lang-flow chip on the right — shows input→output mode at a glance.
+        self.lang_chip = tk.Label(
+            toggle_row, text=self._lang_chip_text(),
+            font=("sans-serif", 9, "bold"),
+            bg=C["surface0"], fg=C["lavender"],
+            padx=8, pady=2,
+        )
+        self.lang_chip.pack(side="right")
+
         # The list_frame was just rebuilt — re-create row widgets for any jobs
         # we already have in memory (e.g. after returning from settings).
         self.rows = {}
@@ -239,6 +261,18 @@ class VoxkeysApp:
         voxkeys.CONFIG["provider"] = self.cfg["provider"] if self.use_ai else "none"
         provider_text = self.cfg["provider"] if self.use_ai else "off"
         self.provider_label.config(text=provider_text)
+        if hasattr(self, "lang_chip") and self.lang_chip.winfo_exists():
+            self.lang_chip.config(text=self._lang_chip_text())
+
+    def _lang_chip_text(self):
+        """Compact 'IN → OUT' label. Shows only IN when output is same as input."""
+        in_code = self.cfg.get("language", "auto")
+        out_code = self.cfg.get("output_language", "") or ""
+        in_short = LANG_SHORT.get(in_code, in_code)
+        if not out_code or out_code == in_code or not self.use_ai:
+            return in_short
+        out_short = LANG_SHORT.get(out_code, out_code)
+        return f"{in_short} → {out_short}"
 
     # ─── Job list rendering (in-place updates) ───────────────────────────────
 
@@ -624,6 +658,15 @@ class VoxkeysApp:
     }
     LANG_FROM_LABEL = {v: k for k, v in LANG_LABELS.items()}
 
+    OUTPUT_LANG_LABELS = {
+        "":      "Same as input",
+        "zh":    "中文（繁體）",
+        "zh-cn": "中文（简体）",
+        "en":    "English",
+        "ja":    "日本語",
+    }
+    OUTPUT_LANG_FROM_LABEL = {v: k for k, v in OUTPUT_LANG_LABELS.items()}
+
     def _build_settings_page(self):
         self._clear()
         self._resize(WINDOW_W, WINDOW_SETTINGS_H)
@@ -644,6 +687,9 @@ class VoxkeysApp:
 
         form = tk.Frame(self.root, bg=C["base"])
         form.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+
+        # ─── AI section ─────────────────────────────────────────────────────
+        self._section_header(form, "AI Polish / Translate")
 
         # Provider
         self._form_label(form, "Provider")
@@ -671,6 +717,9 @@ class VoxkeysApp:
                                   highlightbackground=C["surface1"])
         self.key_entry.pack(fill="x", ipady=4, pady=(2, 12))
 
+        # ─── Speech section ─────────────────────────────────────────────────
+        self._section_header(form, "Speech Recognition", top_pad=4)
+
         # Whisper Model
         self._form_label(form, "Whisper Model (local)")
         self.model_var = tk.StringVar(value=self.cfg["whisper_model"])
@@ -678,12 +727,24 @@ class VoxkeysApp:
                      values=["tiny", "base", "small", "medium", "large-v3"],
                      state="readonly", width=28).pack(fill="x", pady=(0, 12))
 
-        # Language
-        self._form_label(form, "Language")
+        # ─── Language section ───────────────────────────────────────────────
+        self._section_header(form, "Languages", top_pad=4)
+
+        # Input language (what Whisper expects)
+        self._form_label(form, "Input Language")
         lang_display = self.LANG_LABELS.get(self.cfg["language"], self.cfg["language"])
         self.lang_var = tk.StringVar(value=lang_display)
         ttk.Combobox(form, textvariable=self.lang_var,
                      values=list(self.LANG_LABELS.values()),
+                     state="readonly", width=28).pack(fill="x", pady=(0, 12))
+
+        # Output language (translate target; "Same as input" = polish only)
+        self._form_label(form, "Output Language")
+        out_lang_key = self.cfg.get("output_language", "") or ""
+        out_lang_display = self.OUTPUT_LANG_LABELS.get(out_lang_key, "Same as input")
+        self.output_lang_var = tk.StringVar(value=out_lang_display)
+        ttk.Combobox(form, textvariable=self.output_lang_var,
+                     values=list(self.OUTPUT_LANG_LABELS.values()),
                      state="readonly", width=28).pack(fill="x", pady=(0, 16))
 
         save_btn = tk.Button(form, text="Save", font=("sans-serif", 10, "bold"),
@@ -696,6 +757,16 @@ class VoxkeysApp:
     def _form_label(self, parent, text):
         tk.Label(parent, text=text, font=("sans-serif", 9, "bold"),
                  bg=C["base"], fg=C["subtext"], anchor="w").pack(fill="x", pady=(0, 2))
+
+    def _section_header(self, parent, text, top_pad=0):
+        """Subtle uppercase group header — gives the settings page rhythm."""
+        wrap = tk.Frame(parent, bg=C["base"])
+        wrap.pack(fill="x", pady=(top_pad, 6))
+        tk.Label(wrap, text=text.upper(),
+                 font=("sans-serif", 8, "bold"),
+                 bg=C["base"], fg=C["mauve"], anchor="w").pack(side="left")
+        tk.Frame(wrap, bg=C["surface0"], height=1).pack(
+            side="left", fill="x", expand=True, padx=(8, 0), pady=(8, 0))
 
     def _selected_provider(self):
         if hasattr(self, "provider_var"):
@@ -724,10 +795,15 @@ class VoxkeysApp:
         key_field = {"github": "github_token", "openai": "openai_api_key",
                      "claude": "anthropic_api_key"}.get(provider)
 
+        out_lang = self.OUTPUT_LANG_FROM_LABEL.get(
+            self.output_lang_var.get(), ""
+        )
+
         updates = {
             "provider": provider,
             "whisper_model": self.model_var.get(),
             "language": lang,
+            "output_language": out_lang,
         }
         if key_field:
             updates[key_field] = self.key_var.get()

@@ -72,19 +72,45 @@ LANGUAGE_RULES_DEFAULT = (
 )
 
 
-def build_system_prompt(lang=None):
-    """Build a system prompt tailored to the configured language."""
-    lang_rule = LANGUAGE_RULES.get(lang, LANGUAGE_RULES_DEFAULT)
-    return f"""You are a speech-to-text post-processing assistant.
-The user's speech has already been transcribed by a speech recognition system. Your job is to:
-1. {lang_rule}
-2. Fix obvious typos or recognition errors
-3. Add proper punctuation and sentence breaks
-4. Preserve the original meaning — do not alter or add content
-5. Output the cleaned text directly, without any explanation
-6. Even if the input is a question, only clean up the text — never answer or respond to the content itself
+LANGUAGE_NAMES = {
+    "zh": "Traditional Chinese (Taiwan)",
+    "zh-cn": "Simplified Chinese (Mainland)",
+    "en": "English",
+    "ja": "Japanese",
+}
 
+
+def build_system_prompt(input_lang=None, output_lang=None):
+    """Two modes:
+    - Same language (or no output_lang): conservative cleanup only.
+    - Different language: translate.
+    """
+    output_lang = (output_lang or "").strip() or None
+
+    if not output_lang or output_lang == input_lang:
+        lang_rule = LANGUAGE_RULES.get(input_lang, LANGUAGE_RULES_DEFAULT)
+        return f"""You are a strict speech-to-text cleanup assistant.
+The user's speech has already been transcribed by a speech recognition system. Your ONLY job is:
+1. {lang_rule}
+2. Fix obvious typos / recognition errors (e.g. homophones the recognizer clearly misheard).
+3. Add proper punctuation and sentence breaks.
+4. DO NOT paraphrase, rewrite, summarize, reorder, or change any words beyond fixing recognition errors. Preserve every word the user actually said.
+5. DO NOT answer the content. If the input is a question, just clean the question text.
+6. DO NOT add content, explanations, or quotation marks.
+7. Output the cleaned text directly, nothing else.
 Keep technical terms and code-related content unchanged."""
+
+    target = LANGUAGE_NAMES.get(output_lang, output_lang)
+    source = LANGUAGE_NAMES.get(input_lang, "the source language")
+    return f"""You are a translator.
+The user's speech has been transcribed from {source}. Translate it to {target}.
+
+Rules:
+1. Output ONLY the translation, no explanations, no quotes, no source text.
+2. Preserve meaning faithfully. Do not paraphrase loosely.
+3. Use natural {target}; remove filler words appropriate to the source language.
+4. Keep technical terms, code, names, and numbers unchanged.
+5. If the input is a question, translate it as a question — do not answer."""
 
 # ─── Job & Events ────────────────────────────────────────────────────────────
 
@@ -106,6 +132,7 @@ class Job:
     id: int
     frames: List[bytes] = field(default_factory=list)
     language: Optional[str] = None
+    output_language: Optional[str] = None
     provider: str = "github"
     raw_text: str = ""
     polished_text: str = ""
@@ -387,7 +414,7 @@ def _polish_job(job: Job, text: str) -> str:
     if not text.strip() or job.provider == "none":
         return text
     _emit(job, "polishing")
-    prompt = build_system_prompt(job.language)
+    prompt = build_system_prompt(job.language, job.output_language)
     try:
         if job.provider == "claude":
             return polish_with_claude(text, prompt)
@@ -527,6 +554,7 @@ def on_press(key):
         job = Job(
             id=next(_job_counter),
             language=CONFIG.get("language"),
+            output_language=CONFIG.get("output_language") or None,
             provider=CONFIG.get("provider", CONFIG.get("llm_provider", "github")),
         )
         _active_recorder = Recorder(job)
