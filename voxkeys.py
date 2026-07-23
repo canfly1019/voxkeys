@@ -71,15 +71,15 @@ HOTKEY_NAMES = {
 
 def _keyboard_key_for_name(name):
     kb = get_keyboard()
-    normalized = str(name or "ctrl_r").strip().lower()
+    normalized = str(name or "f9").strip().lower()
     if normalized not in HOTKEY_NAMES:
-        normalized = "ctrl_r"
+        normalized = "f9"
     return getattr(kb.Key, normalized), HOTKEY_NAMES[normalized]
 
 
 def configure_default_hotkeys():
     if CONFIG.get("hotkey") is None:
-        key, display = _keyboard_key_for_name(CONFIG.get("record_hotkey", "ctrl_r"))
+        key, display = _keyboard_key_for_name(CONFIG.get("record_hotkey", "f9"))
         CONFIG["hotkey"] = key
         CONFIG["hotkey_display"] = display
 
@@ -89,7 +89,7 @@ CONFIG = load_config()
 CONFIG.update({
     "output_mode": "clipboard",
     "hotkey": None,
-    "hotkey_display": "Right Ctrl",
+    "hotkey_display": "F9",
     "sample_rate": 16000,
     "channels": 1,
 })
@@ -137,12 +137,17 @@ APP_TONE = {
 
 def detect_app_category() -> str:
     """Return an app category for the current X11 active window, or 'general'."""
+    return _active_window_category_and_text()[0]
+
+
+def _active_window_category_and_text():
+    """Return (category, wm_class/title text) for the active X11 window."""
     try:
         wid = subprocess.run(
             ["xdotool", "getactivewindow"], capture_output=True, text=True, timeout=1
         ).stdout.strip()
         if not wid:
-            return "general"
+            return "general", ""
         wm_class = subprocess.run(
             ["xprop", "-id", wid, "WM_CLASS"], capture_output=True, text=True, timeout=1
         ).stdout.lower()
@@ -152,10 +157,10 @@ def detect_app_category() -> str:
         haystack = wm_class + "\n" + title
         for cat, patterns in APP_PATTERNS:
             if any(p in haystack for p in patterns):
-                return cat
+                return cat, haystack
     except Exception:
         pass
-    return "general"
+    return "general", ""
 
 LANGUAGE_RULES = {
     "zh": "Output in Traditional Chinese (Taiwan usage). "
@@ -783,13 +788,16 @@ def _process_job(job: Job):
 
 _active_recorder: Optional[Recorder] = None
 _recorder_lock = threading.Lock()
+SELECTION_UNSAFE_APPS = {"terminal", "code"}
 
 
-def _grab_selection() -> str:
+def _grab_selection(app_cat: str) -> str:
     """Send Ctrl+C to the active window and read the resulting clipboard contents.
     Used by edit-by-voice to capture what the user has highlighted.
     Returns "" if nothing usable was selected.
     """
+    if app_cat in SELECTION_UNSAFE_APPS:
+        return ""
     try:
         subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+c"], timeout=1)
         time.sleep(0.18)
@@ -820,17 +828,19 @@ def on_press(key):
         if _active_recorder is not None:
             return
 
-        # If there's no selection, drop back to plain dictation.
-        edit_source = _grab_selection() or None
+        app_cat, _window_text = _active_window_category_and_text()
+        tone_app_cat = app_cat if CONFIG.get("per_app_prompts") else "general"
 
-        app_cat = detect_app_category() if CONFIG.get("per_app_prompts") else "general"
+        # Selection capture sends Ctrl+C. Never do that in terminals/Codex/code
+        # because it can interrupt the active session.
+        edit_source = _grab_selection(app_cat) or None
 
         job = Job(
             id=next(_job_counter),
             language=CONFIG.get("language"),
             output_language=CONFIG.get("output_language") or None,
             provider=CONFIG.get("provider", CONFIG.get("llm_provider", "github")),
-            app=app_cat,
+            app=tone_app_cat,
             edit_source=edit_source,
         )
         _active_recorder = Recorder(job)
@@ -875,7 +885,7 @@ def main():
     parser.add_argument("--output", default="clipboard",
                         choices=["clipboard", "type"],
                         help="Output mode")
-    parser.add_argument("--hotkey", default=cfg.get("record_hotkey", "ctrl_r"),
+    parser.add_argument("--hotkey", default=cfg.get("record_hotkey", "f9"),
                         choices=list(HOTKEY_NAMES.keys()),
                         help="Hold-to-record hotkey")
     args = parser.parse_args()
