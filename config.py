@@ -24,6 +24,8 @@ DEFAULT_CONFIG = {
     # Per-app prompts: when on, voxkeys detects the active window and adapts tone
     # (terminal / chat / email / code / social).
     "per_app_prompts": False,
+    # F9 conflicts with Codex/terminal shortcuts, so default to F8 and allow changes.
+    "record_hotkey": "f8",
     "window_alpha": 0.92,
 }
 

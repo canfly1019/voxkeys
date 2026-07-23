@@ -4,8 +4,8 @@ Voxkeys — Core engine + CLI entry point
 Hold hotkey to record → Whisper transcription → LLM polish → paste to cursor
 
 Pipeline architecture:
-- Press F9 → Recorder thread starts capturing audio (per-press PyAudio instance).
-- Release F9 → Job is enqueued; user can immediately press F9 again to record the
+- Press the configured hotkey → Recorder thread starts capturing audio.
+- Release the hotkey → Job is enqueued; user can immediately press it again to record the
   next segment while the worker is still transcribing/polishing the previous one.
 - A single worker thread drains the queue (FIFO) so paste-back order matches the
   order segments were spoken.
@@ -59,10 +59,27 @@ def get_keyboard():
     return keyboard
 
 
-def configure_default_hotkeys():
+HOTKEY_NAMES = {
+    "f8": "F8",
+    "f9": "F9",
+    "f10": "F10",
+    "f12": "F12",
+}
+
+
+def _keyboard_key_for_name(name):
     kb = get_keyboard()
+    normalized = str(name or "f8").strip().lower()
+    if normalized not in HOTKEY_NAMES:
+        normalized = "f8"
+    return getattr(kb.Key, normalized), HOTKEY_NAMES[normalized]
+
+
+def configure_default_hotkeys():
     if CONFIG.get("hotkey") is None:
-        CONFIG["hotkey"] = kb.Key.f9
+        key, display = _keyboard_key_for_name(CONFIG.get("record_hotkey", "f8"))
+        CONFIG["hotkey"] = key
+        CONFIG["hotkey_display"] = display
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -70,6 +87,7 @@ CONFIG = load_config()
 CONFIG.update({
     "output_mode": "clipboard",
     "hotkey": None,
+    "hotkey_display": "F8",
     "sample_rate": 16000,
     "channels": 1,
 })
@@ -347,7 +365,7 @@ def _legacy_status_for(job, phase, extra):
 
 
 class Recorder:
-    """One Recorder per F9 press. Captures into its own job.frames buffer."""
+    """One Recorder per hotkey press. Captures into its own job.frames buffer."""
 
     def __init__(self, job: Job):
         self.job = job
@@ -792,7 +810,7 @@ def _is_record_hotkey(key):
 
 
 def on_press(key):
-    """F9 down → record. If text is selected, use speech as an edit instruction."""
+    """Hotkey down → record. If text is selected, use speech as an edit instruction."""
     global _active_recorder
     if not _is_record_hotkey(key):
         return
@@ -820,7 +838,7 @@ def on_press(key):
 
 
 def on_release(key):
-    """F9 up — close out this segment's recorder and enqueue the job."""
+    """Hotkey up — close out this segment's recorder and enqueue the job."""
     global _active_recorder
     if not _is_record_hotkey(key):
         return
@@ -855,12 +873,17 @@ def main():
     parser.add_argument("--output", default="clipboard",
                         choices=["clipboard", "type"],
                         help="Output mode")
+    parser.add_argument("--hotkey", default=cfg.get("record_hotkey", "f8"),
+                        choices=list(HOTKEY_NAMES.keys()),
+                        help="Hold-to-record hotkey")
     args = parser.parse_args()
 
     CONFIG["whisper_model"] = args.model
     CONFIG["language"] = args.lang if args.lang != "auto" else None
     CONFIG["provider"] = args.provider
     CONFIG["output_mode"] = args.output
+    CONFIG["record_hotkey"] = args.hotkey
+    CONFIG["hotkey"] = None
     try:
         configure_default_hotkeys()
     except RuntimeError as e:
@@ -885,7 +908,7 @@ def main():
         print("Please set GITHUB_TOKEN (env var or ~/.config/voxkeys/config.json)")
         sys.exit(1)
 
-    hotkey_name = str(CONFIG["hotkey"]).replace("Key.", "")
+    hotkey_name = CONFIG.get("hotkey_display") or str(CONFIG["hotkey"]).replace("Key.", "").upper()
     lang_display = CONFIG["language"] or "auto-detect"
     print(f"""
 ╔══════════════════════════════════════╗

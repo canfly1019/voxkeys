@@ -4,8 +4,8 @@ Linux voice dictation tool. Hold a hotkey to speak, auto-transcribe, AI polish, 
 
 ## Features
 
-- **Hold to speak**: Hold F9 to record, release to process
-- **Edit selected text**: If text is selected, F9 uses your speech as an edit instruction
+- **Hold to speak**: Hold F8 to record, release to process
+- **Edit selected text**: If text is selected, the record key uses your speech as an edit instruction
 - **Whisper transcription**: Offline speech recognition (faster-whisper)
 - **AI text polish**: Auto-fix typos, add punctuation, remove filler words
 - **Multi-provider support**: GitHub Models (free) / OpenAI / Claude
@@ -62,6 +62,7 @@ python3 voxkeys.py --provider none
 | `--lang` | zh / zh-cn / en / ja / auto | Recognition language |
 | `--provider` | github / openai / claude / none | LLM provider |
 | `--output` | clipboard / type | Output method |
+| `--hotkey` | f8 / f9 / f10 / f12 | Hold-to-record key |
 
 ### Language Support
 
@@ -86,6 +87,7 @@ Can be modified via the GUI settings page, or edited manually:
   "provider": "github",
   "github_token": "<your-token>",
   "whisper_model": "small",
+  "record_hotkey": "f8",
   "language": "zh"
 }
 ```
@@ -106,6 +108,7 @@ Using environment variables for API keys is recommended to avoid storing them in
 ## Notes
 
 - Linux only (X11). Global hotkeys may not work under Wayland
+- The default record key is F8 because F9 can conflict with Codex/terminal shortcuts
 - Whisper model is downloaded automatically on first run
 - GitHub Models is a free tier with sufficient daily quota for normal use
 

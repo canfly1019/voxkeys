@@ -51,6 +51,14 @@ FONT_TINY_BOLD = (FONT_FAMILY, 8, "bold")
 FONT_MONO = (MONO_FAMILY, 9)
 FONT_MONO_ENTRY = (MONO_FAMILY, 10)
 
+HOTKEY_LABELS = {
+    "f8": "F8",
+    "f9": "F9",
+    "f10": "F10",
+    "f12": "F12",
+}
+HOTKEY_FROM_LABEL = {v: k for k, v in HOTKEY_LABELS.items()}
+
 # ─── ttk Theme ───────────────────────────────────────────────────────────────
 
 def setup_theme(root):
@@ -232,6 +240,11 @@ class VoxkeysApp:
         voxkeys.CONFIG["stt_provider"] = self.cfg.get("stt_provider", "local")
         voxkeys.CONFIG["groq_api_key"] = self.cfg.get("groq_api_key", "")
         voxkeys.CONFIG["per_app_prompts"] = bool(self.cfg.get("per_app_prompts", False))
+        voxkeys.CONFIG["record_hotkey"] = self.cfg.get("record_hotkey", "f8")
+        voxkeys.CONFIG["hotkey"] = None
+        voxkeys.CONFIG["hotkey_display"] = HOTKEY_LABELS.get(
+            voxkeys.CONFIG["record_hotkey"], "F8"
+        )
 
     def _apply_window_alpha(self, value):
         alpha = max(MIN_WINDOW_ALPHA, min(MAX_WINDOW_ALPHA, float(value)))
@@ -466,7 +479,7 @@ class VoxkeysApp:
 
         action_row = tk.Frame(center, bg=C["base"])
         action_row.pack(pady=(6, 8))
-        chip(action_row, "F9", fg=C["lavender"]).pack(side="left", padx=(0, 6))
+        chip(action_row, self._hotkey_text(), fg=C["lavender"]).pack(side="left", padx=(0, 6))
         tk.Label(action_row, text="Dictate / Edit", font=(FONT_FAMILY, 12, "bold"),
                  bg=C["base"], fg=C["text"]).pack(side="left")
 
@@ -474,6 +487,9 @@ class VoxkeysApp:
                  text="Inserts at cursor. Select text to edit it.",
                  font=FONT_SMALL,
                  bg=C["base"], fg=C["subtext"]).pack()
+
+    def _hotkey_text(self):
+        return HOTKEY_LABELS.get(self.cfg.get("record_hotkey", "f8"), "F8")
 
     def _hide_empty_state(self):
         if hasattr(self, "empty_frame") and self.empty_frame.winfo_exists():
@@ -913,6 +929,8 @@ class VoxkeysApp:
         )
         self.stt_var = tk.StringVar(value=stt_display)
         self.model_var = tk.StringVar(value=self.cfg["whisper_model"])
+        hotkey_display = HOTKEY_LABELS.get(self.cfg.get("record_hotkey", "f8"), "F8")
+        self.hotkey_var = tk.StringVar(value=hotkey_display)
         self.groq_var = tk.StringVar(value=self.cfg.get("groq_api_key", ""))
 
         lang_display = self.LANG_LABELS.get(self.cfg["language"], self.cfg["language"])
@@ -930,6 +948,7 @@ class VoxkeysApp:
             self.key_var,
             self.stt_var,
             self.model_var,
+            self.hotkey_var,
             self.groq_var,
         ):
             var.trace_add("write", self._mark_settings_dirty)
@@ -957,6 +976,9 @@ class VoxkeysApp:
 
         self._combo_row(parent, "Whisper Model", self.model_var,
                         ["tiny", "base", "small", "medium", "large-v3"])
+
+        self._combo_row(parent, "Record Key", self.hotkey_var,
+                        list(HOTKEY_LABELS.values()))
 
         self.groq_key_frame = tk.Frame(parent, bg=C["base"])
         groq_row = self._row(self.groq_key_frame)
@@ -1045,6 +1067,7 @@ class VoxkeysApp:
             "api_key": self.key_var.get(),
             "stt_provider": self.STT_PROVIDER_FROM_LABEL.get(self.stt_var.get(), "local"),
             "whisper_model": self.model_var.get(),
+            "record_hotkey": HOTKEY_FROM_LABEL.get(self.hotkey_var.get(), "f8"),
             "groq_api_key": self.groq_var.get(),
         }
 
@@ -1074,6 +1097,7 @@ class VoxkeysApp:
         )
         self.stt_var.set(stt_display)
         self.model_var.set(self.cfg["whisper_model"])
+        self.hotkey_var.set(HOTKEY_LABELS.get(self.cfg.get("record_hotkey", "f8"), "F8"))
         self.groq_var.set(self.cfg.get("groq_api_key", ""))
         if hasattr(self, "key_label") and self.key_label.winfo_exists():
             self.key_label.config(text=self._key_label_text())
@@ -1085,23 +1109,19 @@ class VoxkeysApp:
 
     def _save_settings(self):
         provider = self._selected_provider()
-        lang = self.LANG_FROM_LABEL.get(self.lang_var.get(), self.lang_var.get())
         key_field = {"github": "github_token", "openai": "openai_api_key",
                      "claude": "anthropic_api_key"}.get(provider)
-
-        out_lang = self.OUTPUT_LANG_FROM_LABEL.get(
-            self.output_lang_var.get(), ""
-        )
         stt = self.STT_PROVIDER_FROM_LABEL.get(self.stt_var.get(), "local")
 
         updates = {
             "provider": provider,
             "whisper_model": self.model_var.get(),
-            "language": lang,
-            "output_language": out_lang,
+            "record_hotkey": HOTKEY_FROM_LABEL.get(self.hotkey_var.get(), "f8"),
+            "language": self.cfg.get("language", "zh"),
+            "output_language": self.cfg.get("output_language", ""),
             "stt_provider": stt,
             "groq_api_key": self.groq_var.get(),
-            "per_app_prompts": bool(self.per_app_var.get()),
+            "per_app_prompts": bool(self.cfg.get("per_app_prompts", False)),
         }
         if key_field:
             updates[key_field] = self.key_var.get()
