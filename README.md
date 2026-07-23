@@ -5,6 +5,7 @@ Linux voice dictation tool. Hold a hotkey to speak, auto-transcribe, AI polish, 
 ## Features
 
 - **Hold to speak**: Hold F9 to record, release to process
+- **Edit selected text**: If text is selected, F9 uses your speech as an edit instruction
 - **Whisper transcription**: Offline speech recognition (faster-whisper)
 - **AI text polish**: Auto-fix typos, add punctuation, remove filler words
 - **Multi-provider support**: GitHub Models (free) / OpenAI / Claude

@@ -25,29 +25,51 @@ import itertools
 from dataclasses import dataclass, field
 from typing import Optional, Callable, List
 
-import pyaudio
-from pynput import keyboard
-from faster_whisper import WhisperModel
-
 from config import load_config
+
+keyboard = None
+_keyboard_import_error = None
 
 # ─── Dependency Check ────────────────────────────────────────────────────────
 
 def check_dependencies():
     """Check for required system tools. Returns list of missing ones."""
     missing = []
-    for cmd in ("xclip", "xdotool"):
+    for cmd in ("xclip", "xdotool", "xprop"):
         if shutil.which(cmd) is None:
             missing.append(cmd)
     return missing
+
+
+def get_keyboard():
+    """Import pynput's keyboard backend only when hotkeys are actually needed."""
+    global keyboard, _keyboard_import_error
+    if keyboard is not None:
+        return keyboard
+    try:
+        from pynput import keyboard as kb
+    except Exception as e:
+        _keyboard_import_error = e
+        raise RuntimeError(
+            "Unable to initialize global hotkeys. Make sure an X11 display is "
+            "available and DISPLAY is set. Wayland sessions may need X11/XWayland."
+        ) from e
+    keyboard = kb
+    _keyboard_import_error = None
+    return keyboard
+
+
+def configure_default_hotkeys():
+    kb = get_keyboard()
+    if CONFIG.get("hotkey") is None:
+        CONFIG["hotkey"] = kb.Key.f9
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
 CONFIG = load_config()
 CONFIG.update({
     "output_mode": "clipboard",
-    "hotkey": keyboard.Key.f9,
-    "edit_hotkey": keyboard.Key.f10,
+    "hotkey": None,
     "sample_rate": 16000,
     "channels": 1,
 })
@@ -342,6 +364,13 @@ class Recorder:
             self._thread.join(timeout=timeout)
 
     def _run(self):
+        try:
+            import pyaudio
+        except Exception as e:
+            self.job.error = type(e).__name__
+            _emit(self.job, "error")
+            return
+
         p = pyaudio.PyAudio()
         stream = None
         try:
@@ -427,18 +456,45 @@ def _is_hallucination(text):
 # Single shared model instance — loaded lazily, used only by the worker thread
 # (faster-whisper's WhisperModel is not safe under concurrent transcribe calls).
 whisper_model = None
+_whisper_model_lock = threading.Lock()
 
 
-def _transcribe_job(job: Job, wav_path: str) -> str:
+def _load_whisper_model(job: Optional[Job] = None):
     global whisper_model
-
-    if whisper_model is None:
-        _emit(job, "loading_model")
+    if whisper_model is not None:
+        return
+    with _whisper_model_lock:
+        if whisper_model is not None:
+            return
+        if job is not None:
+            _emit(job, "loading_model")
+        from faster_whisper import WhisperModel
         whisper_model = WhisperModel(
             CONFIG["whisper_model"],
             device="cpu",
             compute_type="int8",
         )
+
+
+def preload_whisper_model():
+    """Warm local Whisper in the background so the first dictation is faster."""
+    if CONFIG.get("stt_provider") == "groq" and CONFIG.get("groq_api_key"):
+        return
+    if whisper_model is not None:
+        return
+
+    def run():
+        try:
+            _load_whisper_model()
+        except Exception:
+            # First real transcription will surface the error through the job row.
+            pass
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _transcribe_job(job: Job, wav_path: str) -> str:
+    global whisper_model
 
     _emit(job, "transcribing")
     whisper_lang = job.language
@@ -453,6 +509,8 @@ def _transcribe_job(job: Job, wav_path: str) -> str:
         except Exception:
             # Soft fall-through to local Whisper.
             pass
+
+    _load_whisper_model(job)
 
     segments, _info = whisper_model.transcribe(
         wav_path,
@@ -542,6 +600,22 @@ def polish_with_openai(text, prompt):
     return response.choices[0].message.content.strip()
 
 
+def _strip_wrapping_fences(text: str) -> str:
+    """Remove model-added wrappers around the entire response."""
+    cleaned = text.strip()
+
+    if cleaned.startswith("```") and cleaned.endswith("```"):
+        lines = cleaned.splitlines()
+        if len(lines) >= 2:
+            return "\n".join(lines[1:-1]).strip()
+
+    for quote in ('"""', "'''"):
+        if cleaned.startswith(quote) and cleaned.endswith(quote):
+            return cleaned[len(quote):-len(quote)].strip()
+
+    return cleaned
+
+
 def _polish_job(job: Job, text: str) -> str:
     if not text.strip() or job.provider == "none":
         return text
@@ -554,11 +628,11 @@ def _polish_job(job: Job, text: str) -> str:
         prompt = build_system_prompt(job.language, job.output_language, app=app)
     try:
         if job.provider == "claude":
-            return polish_with_claude(text, prompt)
+            return _strip_wrapping_fences(polish_with_claude(text, prompt))
         if job.provider == "openai":
-            return polish_with_openai(text, prompt)
+            return _strip_wrapping_fences(polish_with_openai(text, prompt))
         if job.provider == "github":
-            return polish_with_github(text, prompt)
+            return _strip_wrapping_fences(polish_with_github(text, prompt))
     except Exception as e:
         job.error = type(e).__name__
         _emit(job, "polish_failed")
@@ -614,7 +688,7 @@ def output_text(text):
         else:
             subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+v"])
     else:
-        ctrl = keyboard.Controller()
+        ctrl = get_keyboard().Controller()
         ctrl.type(text)
 
 
@@ -693,7 +767,7 @@ _recorder_lock = threading.Lock()
 
 def _grab_selection() -> str:
     """Send Ctrl+C to the active window and read the resulting clipboard contents.
-    Used by edit-by-voice (F10) to capture what the user has highlighted.
+    Used by edit-by-voice to capture what the user has highlighted.
     Returns "" if nothing usable was selected.
     """
     try:
@@ -708,31 +782,26 @@ def _grab_selection() -> str:
         return ""
 
 
-def _hotkey_kind(key):
-    """Return 'record' / 'edit' / None for the given keyboard event."""
-    if key == CONFIG["hotkey"]:
-        return "record"
-    if key == CONFIG.get("edit_hotkey"):
-        return "edit"
-    return None
+def _is_record_hotkey(key):
+    """Return True when the given keyboard event is the record hotkey."""
+    try:
+        configure_default_hotkeys()
+    except RuntimeError:
+        return False
+    return key == CONFIG["hotkey"]
 
 
 def on_press(key):
-    """F9 down → record; F10 down → edit-by-voice (capture selection first)."""
+    """F9 down → record. If text is selected, use speech as an edit instruction."""
     global _active_recorder
-    kind = _hotkey_kind(key)
-    if kind is None:
+    if not _is_record_hotkey(key):
         return
     with _recorder_lock:
         if _active_recorder is not None:
             return
 
-        edit_source = None
-        if kind == "edit":
-            selection = _grab_selection()
-            # If there's no selection, drop back to plain dictation so the user
-            # isn't silently ignored.
-            edit_source = selection or None
+        # If there's no selection, drop back to plain dictation.
+        edit_source = _grab_selection() or None
 
         app_cat = detect_app_category() if CONFIG.get("per_app_prompts") else "general"
 
@@ -751,9 +820,9 @@ def on_press(key):
 
 
 def on_release(key):
-    """F9/F10 up — close out this segment's recorder and enqueue the job."""
+    """F9 up — close out this segment's recorder and enqueue the job."""
     global _active_recorder
-    if _hotkey_kind(key) is None:
+    if not _is_record_hotkey(key):
         return
     with _recorder_lock:
         recorder = _active_recorder
@@ -792,6 +861,13 @@ def main():
     CONFIG["language"] = args.lang if args.lang != "auto" else None
     CONFIG["provider"] = args.provider
     CONFIG["output_mode"] = args.output
+    try:
+        configure_default_hotkeys()
+    except RuntimeError as e:
+        print(str(e))
+        if _keyboard_import_error:
+            print(f"Details: {_keyboard_import_error}")
+        sys.exit(1)
 
     missing = check_dependencies()
     if missing:
@@ -823,7 +899,7 @@ def main():
   Output:   {CONFIG['output_mode']}
 """)
 
-    with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
+    with get_keyboard().Listener(on_press=on_press, on_release=on_release) as listener:
         listener.join()
 
 

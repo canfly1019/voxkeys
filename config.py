@@ -24,6 +24,7 @@ DEFAULT_CONFIG = {
     # Per-app prompts: when on, voxkeys detects the active window and adapts tone
     # (terminal / chat / email / code / social).
     "per_app_prompts": False,
+    "window_alpha": 0.92,
 }
 
 
