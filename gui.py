@@ -52,6 +52,8 @@ FONT_MONO = (MONO_FAMILY, 9)
 FONT_MONO_ENTRY = (MONO_FAMILY, 10)
 
 HOTKEY_LABELS = {
+    "ctrl_r": "Right Ctrl",
+    "alt_r": "Right Alt",
     "f8": "F8",
     "f9": "F9",
     "f10": "F10",
@@ -240,10 +242,10 @@ class VoxkeysApp:
         voxkeys.CONFIG["stt_provider"] = self.cfg.get("stt_provider", "local")
         voxkeys.CONFIG["groq_api_key"] = self.cfg.get("groq_api_key", "")
         voxkeys.CONFIG["per_app_prompts"] = bool(self.cfg.get("per_app_prompts", False))
-        voxkeys.CONFIG["record_hotkey"] = self.cfg.get("record_hotkey", "f8")
+        voxkeys.CONFIG["record_hotkey"] = self.cfg.get("record_hotkey", "ctrl_r")
         voxkeys.CONFIG["hotkey"] = None
         voxkeys.CONFIG["hotkey_display"] = HOTKEY_LABELS.get(
-            voxkeys.CONFIG["record_hotkey"], "F8"
+            voxkeys.CONFIG["record_hotkey"], "Right Ctrl"
         )
 
     def _apply_window_alpha(self, value):
@@ -489,7 +491,7 @@ class VoxkeysApp:
                  bg=C["base"], fg=C["subtext"]).pack()
 
     def _hotkey_text(self):
-        return HOTKEY_LABELS.get(self.cfg.get("record_hotkey", "f8"), "F8")
+        return HOTKEY_LABELS.get(self.cfg.get("record_hotkey", "ctrl_r"), "Right Ctrl")
 
     def _hide_empty_state(self):
         if hasattr(self, "empty_frame") and self.empty_frame.winfo_exists():
@@ -929,7 +931,9 @@ class VoxkeysApp:
         )
         self.stt_var = tk.StringVar(value=stt_display)
         self.model_var = tk.StringVar(value=self.cfg["whisper_model"])
-        hotkey_display = HOTKEY_LABELS.get(self.cfg.get("record_hotkey", "f8"), "F8")
+        hotkey_display = HOTKEY_LABELS.get(
+            self.cfg.get("record_hotkey", "ctrl_r"), "Right Ctrl"
+        )
         self.hotkey_var = tk.StringVar(value=hotkey_display)
         self.groq_var = tk.StringVar(value=self.cfg.get("groq_api_key", ""))
 
@@ -1067,7 +1071,7 @@ class VoxkeysApp:
             "api_key": self.key_var.get(),
             "stt_provider": self.STT_PROVIDER_FROM_LABEL.get(self.stt_var.get(), "local"),
             "whisper_model": self.model_var.get(),
-            "record_hotkey": HOTKEY_FROM_LABEL.get(self.hotkey_var.get(), "f8"),
+            "record_hotkey": HOTKEY_FROM_LABEL.get(self.hotkey_var.get(), "ctrl_r"),
             "groq_api_key": self.groq_var.get(),
         }
 
@@ -1097,7 +1101,9 @@ class VoxkeysApp:
         )
         self.stt_var.set(stt_display)
         self.model_var.set(self.cfg["whisper_model"])
-        self.hotkey_var.set(HOTKEY_LABELS.get(self.cfg.get("record_hotkey", "f8"), "F8"))
+        self.hotkey_var.set(
+            HOTKEY_LABELS.get(self.cfg.get("record_hotkey", "ctrl_r"), "Right Ctrl")
+        )
         self.groq_var.set(self.cfg.get("groq_api_key", ""))
         if hasattr(self, "key_label") and self.key_label.winfo_exists():
             self.key_label.config(text=self._key_label_text())
@@ -1116,7 +1122,7 @@ class VoxkeysApp:
         updates = {
             "provider": provider,
             "whisper_model": self.model_var.get(),
-            "record_hotkey": HOTKEY_FROM_LABEL.get(self.hotkey_var.get(), "f8"),
+            "record_hotkey": HOTKEY_FROM_LABEL.get(self.hotkey_var.get(), "ctrl_r"),
             "language": self.cfg.get("language", "zh"),
             "output_language": self.cfg.get("output_language", ""),
             "stt_provider": stt,

@@ -60,6 +60,8 @@ def get_keyboard():
 
 
 HOTKEY_NAMES = {
+    "ctrl_r": "Right Ctrl",
+    "alt_r": "Right Alt",
     "f8": "F8",
     "f9": "F9",
     "f10": "F10",
@@ -69,15 +71,15 @@ HOTKEY_NAMES = {
 
 def _keyboard_key_for_name(name):
     kb = get_keyboard()
-    normalized = str(name or "f8").strip().lower()
+    normalized = str(name or "ctrl_r").strip().lower()
     if normalized not in HOTKEY_NAMES:
-        normalized = "f8"
+        normalized = "ctrl_r"
     return getattr(kb.Key, normalized), HOTKEY_NAMES[normalized]
 
 
 def configure_default_hotkeys():
     if CONFIG.get("hotkey") is None:
-        key, display = _keyboard_key_for_name(CONFIG.get("record_hotkey", "f8"))
+        key, display = _keyboard_key_for_name(CONFIG.get("record_hotkey", "ctrl_r"))
         CONFIG["hotkey"] = key
         CONFIG["hotkey_display"] = display
 
@@ -87,7 +89,7 @@ CONFIG = load_config()
 CONFIG.update({
     "output_mode": "clipboard",
     "hotkey": None,
-    "hotkey_display": "F8",
+    "hotkey_display": "Right Ctrl",
     "sample_rate": 16000,
     "channels": 1,
 })
@@ -873,7 +875,7 @@ def main():
     parser.add_argument("--output", default="clipboard",
                         choices=["clipboard", "type"],
                         help="Output mode")
-    parser.add_argument("--hotkey", default=cfg.get("record_hotkey", "f8"),
+    parser.add_argument("--hotkey", default=cfg.get("record_hotkey", "ctrl_r"),
                         choices=list(HOTKEY_NAMES.keys()),
                         help="Hold-to-record hotkey")
     args = parser.parse_args()

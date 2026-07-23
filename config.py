@@ -24,8 +24,9 @@ DEFAULT_CONFIG = {
     # Per-app prompts: when on, voxkeys detects the active window and adapts tone
     # (terminal / chat / email / code / social).
     "per_app_prompts": False,
-    # F9 conflicts with Codex/terminal shortcuts, so default to F8 and allow changes.
-    "record_hotkey": "f8",
+    # Function keys can conflict with Codex/terminal shortcuts. Right Ctrl is a
+    # single hold key that usually has no terminal action.
+    "record_hotkey": "ctrl_r",
     "window_alpha": 0.92,
 }
 
@@ -39,6 +40,8 @@ def load_config():
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 stored = json.load(f)
             config.update(stored)
+            if stored.get("record_hotkey") in ("f8", "f9"):
+                config["record_hotkey"] = DEFAULT_CONFIG["record_hotkey"]
             # Fix permissions: ensure only owner can read/write
             current_mode = os.stat(CONFIG_PATH).st_mode & 0o777
             if current_mode != 0o600:
