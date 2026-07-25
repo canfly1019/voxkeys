@@ -76,6 +76,11 @@ def setup_theme(root):
                      foreground=C["text"],
                      font=FONT_SMALL,
                      bordercolor=C["surface1"],
+                     # clam draws a light 1px bevel inside the border by default,
+                     # which made comboboxes look taller than the flat tk Entry
+                     # fields next to them. Flatten it to the border color.
+                     lightcolor=C["surface1"],
+                     darkcolor=C["surface1"],
                      arrowcolor=C["subtext"],
                      selectbackground=C["surface1"],
                      selectforeground=C["text"])
