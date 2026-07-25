@@ -128,7 +128,7 @@ PULSE_PERIOD_MS = 520
 PREVIEW_MAX = 30  # visual cells (CJK counts as 2)
 MAX_ROWS = 3
 WINDOW_W = 340
-WINDOW_H = 300
+WINDOW_H = 320  # fits the settings page even with the Groq key row shown
 WINDOW_ALPHA = 0.92
 MIN_WINDOW_ALPHA = 0.70
 MAX_WINDOW_ALPHA = 1.0
@@ -981,8 +981,8 @@ class VoxkeysApp:
         self._combo_row(parent, "Whisper Model", self.model_var,
                         ["tiny", "base", "small", "medium", "large-v3"])
 
-        self._combo_row(parent, "Record Key", self.hotkey_var,
-                        list(HOTKEY_LABELS.values()))
+        # Record Key is not exposed here — it stays whatever record_hotkey says in
+        # ~/.config/voxkeys/config.json. The main page already shows the active key.
 
         self.groq_key_frame = tk.Frame(parent, bg=C["base"])
         groq_row = self._row(self.groq_key_frame)
