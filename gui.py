@@ -10,6 +10,7 @@ Completed rows are clickable to recopy the polished text to the clipboard.
 
 import os
 import subprocess
+import time
 import tkinter as tk
 from tkinter import ttk
 
@@ -788,6 +789,13 @@ class VoxkeysApp:
 
     def _on_event(self, e):
         """Called from worker / recorder threads. Marshal onto the Tk thread."""
+        # Phase trail on stdout (the launcher appends it to gui.log). voxkeys.py
+        # only prints phases when no event callback is set, i.e. CLI mode, so
+        # without this a stalled queue leaves no trace of where it stopped.
+        # flush=True because a stall means the process never exits to flush.
+        print(f"[{time.strftime('%H:%M:%S')}] #{e.get('job_id')} {e.get('phase')}"
+              + (f" err={e['error']}" if e.get("error") else ""), flush=True)
+
         def _apply():
             try:
                 self._apply_event(e)

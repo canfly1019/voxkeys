@@ -584,9 +584,21 @@ def _transcribe_with_groq(wav_path: str, language: Optional[str], api_key: str) 
 
 # ─── LLM Polish ──────────────────────────────────────────────────────────────
 
+# A single worker drains the queue in order, so one request that never returns
+# wedges every later dictation at "queued". Both SDKs default to 600s with
+# retries, which is effectively forever for a dictation tool: fail fast instead
+# and let _polish_job fall back to pasting the raw transcript.
+# Worst case wait is POLISH_TIMEOUT * (POLISH_RETRIES + 1) = 30s. Normal polish
+# latency is 1-2s, so 15s is already 10x slack; the retry covers transient 5xx.
+POLISH_TIMEOUT = 15.0
+POLISH_RETRIES = 1
+
+
 def polish_with_claude(text, prompt):
     import anthropic
-    client = anthropic.Anthropic(api_key=CONFIG["anthropic_api_key"])
+    client = anthropic.Anthropic(api_key=CONFIG["anthropic_api_key"],
+                                 timeout=POLISH_TIMEOUT,
+                                 max_retries=POLISH_RETRIES)
     message = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1024,
@@ -601,6 +613,8 @@ def polish_with_github(text, prompt):
     client = openai.OpenAI(
         api_key=CONFIG["github_token"],
         base_url="https://models.inference.ai.azure.com",
+        timeout=POLISH_TIMEOUT,
+        max_retries=POLISH_RETRIES,
     )
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -614,7 +628,9 @@ def polish_with_github(text, prompt):
 
 def polish_with_openai(text, prompt):
     import openai
-    client = openai.OpenAI(api_key=CONFIG["openai_api_key"])
+    client = openai.OpenAI(api_key=CONFIG["openai_api_key"],
+                           timeout=POLISH_TIMEOUT,
+                           max_retries=POLISH_RETRIES)
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
