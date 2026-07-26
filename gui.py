@@ -793,8 +793,13 @@ class VoxkeysApp:
         # only prints phases when no event callback is set, i.e. CLI mode, so
         # without this a stalled queue leaves no trace of where it stopped.
         # flush=True because a stall means the process never exits to flush.
+        extras = []
+        if e.get("error"):
+            extras.append(f"err={e['error']}")
+        if e.get("edit_mode"):
+            extras.append("edit")
         print(f"[{time.strftime('%H:%M:%S')}] #{e.get('job_id')} {e.get('phase')}"
-              + (f" err={e['error']}" if e.get("error") else ""), flush=True)
+              + ((" " + " ".join(extras)) if extras else ""), flush=True)
 
         def _apply():
             try:

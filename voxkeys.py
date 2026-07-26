@@ -807,21 +807,46 @@ _recorder_lock = threading.Lock()
 SELECTION_UNSAFE_APPS = {"terminal", "code"}
 
 
-def _grab_selection(app_cat: str) -> str:
-    """Send Ctrl+C to the active window and read the resulting clipboard contents.
-    Used by edit-by-voice to capture what the user has highlighted.
-    Returns "" if nothing usable was selected.
-    """
-    if app_cat in SELECTION_UNSAFE_APPS:
-        return ""
+def _read_clipboard() -> str:
+    """Read CLIPBOARD selection; empty string on any failure."""
     try:
-        subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+c"], timeout=1)
-        time.sleep(0.18)
         result = subprocess.run(
             ["xclip", "-selection", "clipboard", "-o"],
             capture_output=True, text=True, timeout=2,
         )
-        return (result.stdout or "").strip()
+        return result.stdout or ""
+    except Exception:
+        return ""
+
+
+def _grab_selection(app_cat: str) -> str:
+    """Capture the user's *actual* text selection for edit-by-voice.
+
+    Returns "" when nothing is selected so the job falls through to plain
+    dictation.
+
+    Important: after a normal dictate, CLIPBOARD still holds the previous
+    paste. Blindly reading clipboard after Ctrl+C would treat that leftover
+    as a selection, put the job into edit mode, and often paste the previous
+    message back (LLM keeps the "source" when the spoken text is not an
+    edit instruction). Only treat clipboard as a selection if Ctrl+C
+    *changed* it.
+    """
+    if app_cat in SELECTION_UNSAFE_APPS:
+        return ""
+    try:
+        before = _read_clipboard()
+        subprocess.run(
+            ["xdotool", "key", "--clearmodifiers", "ctrl+c"], timeout=1
+        )
+        time.sleep(0.18)
+        after = _read_clipboard()
+        # Real selection → clipboard content changes. Leftover paste from the
+        # previous dictation does not, so we correctly fall through to plain
+        # dictate.
+        if after.strip() and after != before:
+            return after.strip()
+        return ""
     except Exception:
         return ""
 
@@ -861,7 +886,7 @@ def on_press(key):
         )
         _active_recorder = Recorder(job)
         _ensure_worker()
-        _emit(job, "recording")
+        _emit(job, "recording", edit_mode=bool(edit_source))
         _active_recorder.start()
 
 
