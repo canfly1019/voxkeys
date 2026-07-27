@@ -4,11 +4,12 @@ Voxkeys — Core engine + CLI entry point
 Hold hotkey to record → Whisper transcription → LLM polish → paste to cursor
 
 Pipeline architecture:
-- Press the configured hotkey → Recorder thread starts capturing audio.
+- Press the configured hotkey → capture target window id, then start Recorder.
 - Release the hotkey → Job is enqueued; user can immediately press it again to record the
   next segment while the worker is still transcribing/polishing the previous one.
 - A single worker thread drains the queue (FIFO) so paste-back order matches the
   order segments were spoken.
+- Paste re-activates the captured window and restores the previous clipboard after.
 """
 
 import os
@@ -284,6 +285,10 @@ class Job:
     # Edit-by-voice: when set, the spoken text is treated as an instruction
     # applied to this captured selection (Ctrl+C right before recording).
     edit_source: Optional[str] = None
+    # X11 window id focused when the user pressed the record hotkey. Paste
+    # re-activates this window so text lands where they were speaking, even if
+    # focus moved during transcribe/polish.
+    target_window: Optional[str] = None
 
 
 _job_counter = itertools.count(1)
@@ -682,55 +687,163 @@ def _polish_job(job: Job, text: str) -> str:
 
 # ─── Output to Cursor ────────────────────────────────────────────────────────
 
-def output_text(text):
-    """Paste text to the currently focused input field."""
-    if not text:
-        return
+# Matches terminal detection in APP_PATTERNS / legacy output_text paths.
+TERMINAL_NAMES = (
+    "gnome-terminal", "xfce4-terminal", "konsole",
+    "xterm", "alacritty", "kitty", "terminator",
+    "tilix", "lxterminal", "mate-terminal",
+    "agent-deck", "agent_deck",
+)
 
-    if CONFIG["output_mode"] == "clipboard":
+# How long to wait after paste before restoring the previous clipboard.
+# Too short → some apps still read the restored (old) content; too long →
+# the user briefly can't copy/paste their own stuff.
+_CLIPBOARD_RESTORE_DELAY = 0.20
+_CLIPBOARD_SETTLE_TIMEOUT = 0.50
+
+
+def _get_active_window_id() -> str:
+    """Return the X11 window id of the focused window, or ""."""
+    try:
+        return subprocess.run(
+            ["xdotool", "getactivewindow"],
+            capture_output=True, text=True, timeout=1,
+        ).stdout.strip()
+    except Exception:
+        return ""
+
+
+def _window_alive(wid: str) -> bool:
+    if not wid:
+        return False
+    try:
+        r = subprocess.run(
+            ["xdotool", "getwindowname", wid],
+            capture_output=True, text=True, timeout=1,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _activate_window(wid: str) -> bool:
+    """Focus `wid`. Returns True if activation was attempted successfully."""
+    if not wid or not _window_alive(wid):
+        return False
+    try:
+        subprocess.run(
+            ["xdotool", "windowactivate", "--sync", wid],
+            capture_output=True, timeout=2,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _is_terminal_window(wid: str) -> bool:
+    if not wid:
+        return False
+    try:
+        wm_class = subprocess.run(
+            ["xprop", "-id", wid, "WM_CLASS"],
+            capture_output=True, text=True, timeout=1,
+        ).stdout.lower()
+        window_title = subprocess.run(
+            ["xdotool", "getwindowname", wid],
+            capture_output=True, text=True, timeout=1,
+        ).stdout.lower()
+        return (
+            any(t in wm_class for t in TERMINAL_NAMES)
+            or any(t in window_title for t in TERMINAL_NAMES)
+        )
+    except Exception:
+        return False
+
+
+def _read_clipboard() -> str:
+    """Read CLIPBOARD selection; empty string on any failure."""
+    try:
+        result = subprocess.run(
+            ["xclip", "-selection", "clipboard", "-o"],
+            capture_output=True, text=True, timeout=2,
+        )
+        return result.stdout or ""
+    except Exception:
+        return ""
+
+
+def _write_clipboard(text: str) -> bool:
+    """Set CLIPBOARD to `text`. Returns True if xclip accepted the write."""
+    try:
         process = subprocess.Popen(
             ["xclip", "-selection", "clipboard"],
             stdin=subprocess.PIPE,
         )
-        process.communicate(text.encode("utf-8"))
-        time.sleep(0.3)
+        process.communicate(text.encode("utf-8"), timeout=5)
+        return process.returncode in (0, None)
+    except Exception:
+        return False
 
-        is_terminal = False
-        try:
-            wid = subprocess.run(
-                ["xdotool", "getactivewindow"],
-                capture_output=True, text=True,
-            ).stdout.strip()
-            result = subprocess.run(
-                ["xprop", "-id", wid, "WM_CLASS"],
-                capture_output=True, text=True,
-            )
-            wm_class = result.stdout.lower()
-            title_result = subprocess.run(
-                ["xdotool", "getwindowname", wid],
-                capture_output=True, text=True,
-            )
-            window_title = title_result.stdout.lower()
-            terminal_names = (
-                "gnome-terminal", "xfce4-terminal", "konsole",
-                "xterm", "alacritty", "kitty", "terminator",
-                "tilix", "lxterminal", "mate-terminal",
-                "agent-deck", "agent_deck",
-            )
-            is_terminal = (
-                any(t in wm_class for t in terminal_names)
-                or any(t in window_title for t in terminal_names)
-            )
-        except Exception:
-            pass
 
-        if is_terminal:
-            subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"])
-        else:
-            subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+v"])
-    else:
+def _wait_clipboard_equals(text: str, timeout: float = _CLIPBOARD_SETTLE_TIMEOUT) -> bool:
+    """Poll until CLIPBOARD matches `text`, or timeout. Mitigates paste races."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _read_clipboard() == text:
+            return True
+        time.sleep(0.03)
+    return False
+
+
+def output_text(text, *, target_window: Optional[str] = None):
+    """Paste text into the window the user was in when they started recording.
+
+    - Re-activates `target_window` before pasting so focus drift during
+      transcribe/polish doesn't dump text into the wrong app.
+    - Snapshots CLIPBOARD before overwrite and restores it after paste so the
+      user's previous copy buffer is not permanently clobbered.
+    - Falls back to the currently focused window if the target is gone.
+    """
+    if not text:
+        return
+
+    wid = target_window if _window_alive(target_window or "") else ""
+    if not wid:
+        wid = _get_active_window_id()
+
+    if CONFIG["output_mode"] != "clipboard":
+        if wid:
+            _activate_window(wid)
+            time.sleep(0.05)
         ctrl = get_keyboard().Controller()
         ctrl.type(text)
+        return
+
+    previous = _read_clipboard()
+    _write_clipboard(text)
+    _wait_clipboard_equals(text)
+
+    if wid:
+        _activate_window(wid)
+        # Brief settle so the target actually receives the key event.
+        time.sleep(0.05)
+
+    if _is_terminal_window(wid):
+        subprocess.run(
+            ["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"],
+            capture_output=True, timeout=2,
+        )
+    else:
+        subprocess.run(
+            ["xdotool", "key", "--clearmodifiers", "ctrl+v"],
+            capture_output=True, timeout=2,
+        )
+
+    # Give the app time to read CLIPBOARD before we put the old value back.
+    # Skip restore when there is nothing to restore or it already matches.
+    if previous != text:
+        time.sleep(_CLIPBOARD_RESTORE_DELAY)
+        _write_clipboard(previous)
 
 
 # ─── Worker Thread ───────────────────────────────────────────────────────────
@@ -787,7 +900,7 @@ def _process_job(job: Job):
         _emit(job, "transcribed")
         polished = _polish_job(job, text)
         job.polished_text = polished
-        output_text(polished)
+        output_text(polished, target_window=job.target_window)
         # If polish raised, _polish_job already emitted "polish_failed" — keep
         # that phase so the GUI shows the row as a fallback (raw text pasted),
         # not a clean success.
@@ -805,18 +918,6 @@ def _process_job(job: Job):
 _active_recorder: Optional[Recorder] = None
 _recorder_lock = threading.Lock()
 SELECTION_UNSAFE_APPS = {"terminal", "code"}
-
-
-def _read_clipboard() -> str:
-    """Read CLIPBOARD selection; empty string on any failure."""
-    try:
-        result = subprocess.run(
-            ["xclip", "-selection", "clipboard", "-o"],
-            capture_output=True, text=True, timeout=2,
-        )
-        return result.stdout or ""
-    except Exception:
-        return ""
 
 
 def _grab_selection(app_cat: str) -> str:
@@ -869,6 +970,10 @@ def on_press(key):
         if _active_recorder is not None:
             return
 
+        # Capture focus *before* selection grab / recording so paste lands in
+        # the window the user was actually speaking into.
+        target_window = _get_active_window_id() or None
+
         app_cat, _window_text = _active_window_category_and_text()
         tone_app_cat = app_cat if CONFIG.get("per_app_prompts") else "general"
 
@@ -883,6 +988,7 @@ def on_press(key):
             provider=CONFIG.get("provider", CONFIG.get("llm_provider", "github")),
             app=tone_app_cat,
             edit_source=edit_source,
+            target_window=target_window,
         )
         _active_recorder = Recorder(job)
         _ensure_worker()

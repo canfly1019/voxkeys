@@ -9,7 +9,7 @@ Linux voice dictation tool. Hold a hotkey to speak, auto-transcribe, AI polish, 
 - **Whisper transcription**: Offline speech recognition (faster-whisper)
 - **AI text polish**: Auto-fix typos, add punctuation, remove filler words
 - **Multi-provider support**: GitHub Models (free) / OpenAI / Claude
-- **Auto-paste**: Result pasted directly to the current cursor position
+- **Auto-paste**: Result pasted into the window you were in when you pressed the hotkey (focus is restored if it drifted during processing); previous clipboard contents are restored after paste
 - **GUI mode**: Tkinter floating window with real-time status
 - **CLI mode**: Terminal-based, for advanced users
 
