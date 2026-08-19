@@ -92,18 +92,23 @@ Can be modified via the GUI settings page, or edited manually:
 }
 ```
 
-API key priority: config.json → environment variables (`GITHUB_TOKEN`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`)
+API key priority: config.json → environment variables (`GITHUB_TOKEN`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`)
 
-Using environment variables for API keys is recommended to avoid storing them in plaintext.
+Keep keys in the environment rather than in `config.json`. A key that came from
+the environment is never written back to `config.json`, so saving from the
+settings dialog cannot copy it onto disk.
 
 ## Security
 
 - Config file permissions are automatically set to `600` (owner read/write only)
 - `config.json` is included in `.gitignore` to prevent accidental commits
-- To use environment variables instead of config file, add keys to `~/.bashrc` or `~/.zshrc`:
+- Put keys in `~/.config/voxkeys/secrets.env` (mode `600`):
   ```bash
   export GITHUB_TOKEN="your-token-here"
   ```
+  The launcher sources that file before starting the app. `~/.bashrc` does not
+  work here: a desktop launcher starts the app outside an interactive shell, so
+  nothing in your shell rc is ever read.
 
 ## Notes
 
