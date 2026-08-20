@@ -98,9 +98,12 @@ CONFIG.update({
 # Optional OpenCC for zh-CN → zh-TW normalization. Soft dep; falls back to identity.
 try:
     from opencc import OpenCC
-    _opencc_s2twp = OpenCC("s2twp")
+    # s2tw, not s2twp: plain glyph conversion only. The "p" variant also
+    # swaps in Taiwan vocabulary, which turns 智能合約 into 智慧合約 — wrong
+    # for web3 writing, where the Taiwanese term is 智能合約 too.
+    _opencc_s2tw = OpenCC("s2tw")
     def _normalize_zh_tw(text: str) -> str:
-        return _opencc_s2twp.convert(text)
+        return _opencc_s2tw.convert(text)
 except Exception:
     def _normalize_zh_tw(text: str) -> str:
         return text
@@ -883,14 +886,17 @@ def _process_job(job: Job):
     try:
         text = _transcribe_job(job, wav_path)
 
-        # zh-CN → zh-TW normalize for the no-LLM case (provider=none) when the
-        # target is zh-TW. With LLM polish on, the model handles this itself.
+        # Whisper only knows the generic "zh" and emits Simplified for it, so
+        # picking 中文（繁體）in the UI changes nothing at the STT layer. The
+        # conversion has to happen here. This used to be gated on
+        # provider == "none", leaving the LLM prompt as the only zh-TW
+        # enforcement — and that instruction loses to the surrounding "do not
+        # rewrite any words" rules, so Simplified leaked through on every
+        # provider. Normalize before polish instead, so the model already sees
+        # Traditional and has nothing to convert.
         target_lang = job.output_language or job.language
-        if (
-            target_lang == "zh"
-            and job.language in ("zh", "zh-cn")
-            and job.provider == "none"
-        ):
+        zh_tw_target = target_lang == "zh" and job.language in ("zh", "zh-cn")
+        if zh_tw_target:
             text = _normalize_zh_tw(text)
 
         job.raw_text = text
@@ -899,6 +905,10 @@ def _process_job(job: Job):
             return
         _emit(job, "transcribed")
         polished = _polish_job(job, text)
+        # Safety net: the model can still reintroduce Simplified when it
+        # rewrites a phrase. OpenCC is idempotent on Traditional input.
+        if zh_tw_target:
+            polished = _normalize_zh_tw(polished)
         job.polished_text = polished
         output_text(polished, target_window=job.target_window)
         # If polish raised, _polish_job already emitted "polish_failed" — keep

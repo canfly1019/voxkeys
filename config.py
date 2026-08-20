@@ -29,6 +29,17 @@ DEFAULT_CONFIG = {
 }
 
 
+# API key field -> environment variable. Keys sourced from the environment are
+# never written back to config.json (see save_config), so putting a token in
+# the environment keeps it out of the file the settings dialog rewrites.
+ENV_KEYS = {
+    "github_token": "GITHUB_TOKEN",
+    "openai_api_key": "OPENAI_API_KEY",
+    "anthropic_api_key": "ANTHROPIC_API_KEY",
+    "groq_api_key": "GROQ_API_KEY",
+}
+
+
 def load_config():
     """Load config file, merge with defaults. API keys: config first, env var fallback."""
     config = dict(DEFAULT_CONFIG)
@@ -46,14 +57,9 @@ def load_config():
             pass
 
     # API key fallback to environment variables
-    if not config["github_token"]:
-        config["github_token"] = os.environ.get("GITHUB_TOKEN", "")
-    if not config["openai_api_key"]:
-        config["openai_api_key"] = os.environ.get("OPENAI_API_KEY", "")
-    if not config["anthropic_api_key"]:
-        config["anthropic_api_key"] = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not config["groq_api_key"]:
-        config["groq_api_key"] = os.environ.get("GROQ_API_KEY", "")
+    for field, env_name in ENV_KEYS.items():
+        if not config.get(field):
+            config[field] = os.environ.get(env_name, "")
 
     return config
 
@@ -69,6 +75,14 @@ def save_config(updates):
             pass
 
     current.update(updates)
+
+    # The settings dialog round-trips whatever load_config() returned, so a key
+    # that came from the environment would otherwise get persisted to disk on
+    # the next save. Drop it back to empty and let the env supply it again.
+    for field, env_name in ENV_KEYS.items():
+        env_value = os.environ.get(env_name, "")
+        if env_value and current.get(field) == env_value:
+            current[field] = ""
 
     os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
