@@ -23,6 +23,8 @@ import threading
 import shutil
 import argparse
 import itertools
+import math
+from array import array
 from dataclasses import dataclass, field
 from typing import Optional, Callable, List
 
@@ -400,7 +402,7 @@ class Recorder:
         try:
             import pyaudio
         except Exception as e:
-            self.job.error = type(e).__name__
+            self.job.error = f"{type(e).__name__}: {e}"
             _emit(self.job, "error")
             return
 
@@ -415,7 +417,7 @@ class Recorder:
                 frames_per_buffer=1024,
             )
         except Exception as e:
-            self.job.error = type(e).__name__
+            self.job.error = f"{type(e).__name__}: {e}"
             _emit(self.job, "error")
             p.terminate()
             return
@@ -476,6 +478,13 @@ HALLUCINATION_PATTERNS = [
 ]
 
 NO_SPEECH_PROB_THRESHOLD = 0.6
+# A deliberately conservative preflight check. It only rejects near-digital
+# silence; real microphone room noise normally sits well above this level.
+MIN_AUDIO_RMS = 30.0
+
+GPUSTACK_STT_MODELS = (
+    "breeze-asr-25",
+)
 
 
 def _is_hallucination(text):
@@ -484,6 +493,17 @@ def _is_hallucination(text):
         if pattern.replace(" ", "").lower() in normalized:
             return True
     return False
+
+
+def _audio_rms(frames: List[bytes]) -> float:
+    """Return RMS amplitude for native 16-bit mono PCM frames."""
+    samples = array("h")
+    samples.frombytes(b"".join(frames))
+    if sys.byteorder != "little":
+        samples.byteswap()
+    if not samples:
+        return 0.0
+    return math.sqrt(sum(sample * sample for sample in samples) / len(samples))
 
 
 # Single shared model instance — loaded lazily, used only by the worker thread
@@ -513,6 +533,10 @@ def preload_whisper_model():
     """Warm local Whisper in the background so the first dictation is faster."""
     if CONFIG.get("stt_provider") == "groq" and CONFIG.get("groq_api_key"):
         return
+    if (CONFIG.get("stt_provider") == "gpustack"
+            and CONFIG.get("gpustack_api_key")
+            and CONFIG.get("gpustack_base_url")):
+        return
     if whisper_model is not None:
         return
 
@@ -534,11 +558,26 @@ def _transcribe_job(job: Job, wav_path: str) -> str:
     if whisper_lang == "zh-cn":
         whisper_lang = "zh"
 
-    # Cloud STT path — currently Groq's whisper-large-v3. Falls back to local
-    # on any error so the user doesn't get stranded if the network blips.
-    if CONFIG.get("stt_provider") == "groq" and CONFIG.get("groq_api_key"):
+    # Cloud STT paths. Both use OpenAI-compatible audio transcriptions and fall
+    # back to local Whisper on errors so a network blip never strands dictation.
+    stt_provider = CONFIG.get("stt_provider")
+    if stt_provider == "groq" and CONFIG.get("groq_api_key"):
         try:
             return _transcribe_with_groq(wav_path, whisper_lang, CONFIG["groq_api_key"])
+        except Exception:
+            # Soft fall-through to local Whisper.
+            pass
+    elif (stt_provider == "gpustack"
+          and CONFIG.get("gpustack_api_key")
+          and CONFIG.get("gpustack_base_url")):
+        try:
+            return _transcribe_with_openai_compatible(
+                wav_path,
+                whisper_lang,
+                CONFIG["gpustack_api_key"],
+                CONFIG["gpustack_base_url"],
+                CONFIG.get("gpustack_stt_model", GPUSTACK_STT_MODELS[0]),
+            )
         except Exception:
             # Soft fall-through to local Whisper.
             pass
@@ -571,17 +610,38 @@ def _transcribe_with_groq(wav_path: str, language: Optional[str], api_key: str) 
     """Groq OpenAI-compatible audio.transcriptions endpoint (whisper-large-v3).
     Faster + more accurate than local small/medium, free tier is generous.
     """
+    return _transcribe_with_openai_compatible(
+        wav_path,
+        language,
+        api_key,
+        "https://api.groq.com/openai/v1",
+        "whisper-large-v3",
+    )
+
+
+def _transcribe_with_openai_compatible(
+    wav_path: str,
+    language: Optional[str],
+    api_key: str,
+    base_url: str,
+    model: str,
+) -> str:
+    """Transcribe a WAV through an OpenAI-compatible audio endpoint."""
     import requests
-    data = {"model": "whisper-large-v3", "response_format": "json"}
+
+    if not base_url or not api_key or not model:
+        raise ValueError("STT endpoint, API key, and model are required")
+
+    data = {"model": model, "response_format": "json"}
     if language:
         data["language"] = language
     with open(wav_path, "rb") as f:
         r = requests.post(
-            "https://api.groq.com/openai/v1/audio/transcriptions",
+            f"{base_url.rstrip('/')}/audio/transcriptions",
             headers={"Authorization": f"Bearer {api_key}"},
             files={"file": (os.path.basename(wav_path), f, "audio/wav")},
             data=data,
-            timeout=60,
+            timeout=120,
         )
     r.raise_for_status()
     text = (r.json().get("text") or "").strip()
@@ -616,20 +676,27 @@ def polish_with_claude(text, prompt):
     return message.content[0].text.strip()
 
 
-def polish_with_github(text, prompt):
+def polish_with_gpustack(text, prompt):
     import openai
+
+    base_url = CONFIG["gpustack_base_url"].rstrip("/")
+    model = CONFIG["gpustack_polish_model"]
+    if not base_url or not CONFIG["gpustack_api_key"] or not model:
+        raise ValueError("GPUStack endpoint, API key, and polish model are required")
     client = openai.OpenAI(
-        api_key=CONFIG["github_token"],
-        base_url="https://models.inference.ai.azure.com",
+        api_key=CONFIG["gpustack_api_key"],
+        base_url=base_url,
         timeout=POLISH_TIMEOUT,
         max_retries=POLISH_RETRIES,
     )
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=model,
+        max_tokens=1024,
         messages=[
             {"role": "system", "content": prompt},
             {"role": "user", "content": text},
         ],
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
     )
     return response.choices[0].message.content.strip()
 
@@ -680,10 +747,10 @@ def _polish_job(job: Job, text: str) -> str:
             return _strip_wrapping_fences(polish_with_claude(text, prompt))
         if job.provider == "openai":
             return _strip_wrapping_fences(polish_with_openai(text, prompt))
-        if job.provider == "github":
-            return _strip_wrapping_fences(polish_with_github(text, prompt))
+        if job.provider == "gpustack":
+            return _strip_wrapping_fences(polish_with_gpustack(text, prompt))
     except Exception as e:
-        job.error = type(e).__name__
+        job.error = f"{type(e).__name__}: {e}"
         _emit(job, "polish_failed")
     return text
 
@@ -872,7 +939,7 @@ def _worker_loop():
         try:
             _process_job(job)
         except Exception as e:
-            job.error = type(e).__name__
+            job.error = f"{type(e).__name__}: {e}"
             _emit(job, "error")
         finally:
             _job_queue.task_done()
@@ -880,6 +947,9 @@ def _worker_loop():
 
 def _process_job(job: Job):
     if not job.frames:
+        _emit(job, "empty")
+        return
+    if _audio_rms(job.frames) < MIN_AUDIO_RMS:
         _emit(job, "empty")
         return
     wav_path = save_audio_to_wav(job.frames)
@@ -1037,7 +1107,7 @@ def main():
     parser.add_argument("--lang", default=cfg["language"],
                         help="Language code (zh/en/ja...), leave empty for auto-detect")
     parser.add_argument("--provider", default=cfg["provider"],
-                        choices=["claude", "openai", "github", "none"],
+                        choices=["claude", "openai", "gpustack", "none"],
                         help="LLM provider")
     parser.add_argument("--output", default="clipboard",
                         choices=["clipboard", "type"],
@@ -1073,8 +1143,10 @@ def main():
     if CONFIG["provider"] == "openai" and not CONFIG["openai_api_key"]:
         print("Please set OPENAI_API_KEY (env var or ~/.config/voxkeys/config.json)")
         sys.exit(1)
-    if CONFIG["provider"] == "github" and not CONFIG["github_token"]:
-        print("Please set GITHUB_TOKEN (env var or ~/.config/voxkeys/config.json)")
+    if CONFIG["provider"] == "gpustack" and (
+        not CONFIG["gpustack_api_key"] or not CONFIG["gpustack_base_url"]
+    ):
+        print("Please configure the shared GPUStack endpoint and API key")
         sys.exit(1)
 
     hotkey_name = CONFIG.get("hotkey_display") or str(CONFIG["hotkey"]).replace("Key.", "").upper()

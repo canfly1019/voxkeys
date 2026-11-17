@@ -6,9 +6,9 @@ Linux voice dictation tool. Hold a hotkey to speak, auto-transcribe, AI polish, 
 
 - **Hold to speak**: Hold F9 to record, release to process
 - **Edit selected text**: If text is selected, the record key uses your speech as an edit instruction
-- **Whisper transcription**: Offline speech recognition (faster-whisper)
+- **Flexible transcription**: Local faster-whisper, Groq, or GPUStack ASR
 - **AI text polish**: Auto-fix typos, add punctuation, remove filler words
-- **Multi-provider support**: GitHub Models (free) / OpenAI / Claude
+- **Multi-provider support**: GPUStack (Qwen) / OpenAI / Claude
 - **Auto-paste**: Result pasted into the window you were in when you pressed the hotkey (focus is restored if it drifted during processing); previous clipboard contents are restored after paste
 - **GUI mode**: Tkinter floating window with real-time status
 - **CLI mode**: Terminal-based, for advanced users
@@ -48,7 +48,7 @@ A floating window shows the current status. Use the settings page to configure p
 python3 voxkeys.py
 
 # With arguments
-python3 voxkeys.py --provider github --model small --lang zh
+python3 voxkeys.py --provider gpustack --model small --lang zh
 
 # No AI polish
 python3 voxkeys.py --provider none
@@ -60,7 +60,7 @@ python3 voxkeys.py --provider none
 |----------|---------|-------------|
 | `--model` | tiny / base / small / medium / large-v3 | Whisper model size |
 | `--lang` | zh / zh-cn / en / ja / auto | Recognition language |
-| `--provider` | github / openai / claude / none | LLM provider |
+| `--provider` | gpustack / openai / claude / none | LLM provider |
 | `--output` | clipboard / type | Output method |
 | `--hotkey` | ctrl_r / alt_r / f8 / f9 / f10 / f12 | Hold-to-record key |
 
@@ -84,15 +84,25 @@ Can be modified via the GUI settings page, or edited manually:
 
 ```json
 {
-  "provider": "github",
-  "github_token": "<your-token>",
+  "provider": "gpustack",
+  "gpustack_polish_model": "qwen3.8-27b-fp8",
   "whisper_model": "small",
   "record_hotkey": "f9",
   "language": "zh"
 }
 ```
 
-API key priority: config.json → environment variables (`GITHUB_TOKEN`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`)
+API key priority: config.json → environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `GPUSTACK_API_KEY`).
+
+GPUStack supplies both OpenAI-compatible endpoints: `/audio/transcriptions` for
+speech recognition and `/chat/completions` for polishing. The shared
+`GPUSTACK_BASE_URL` includes the API prefix (typically `/v1`); `GPUSTACK_API_KEY`
+authenticates both. Speech recognition and polishing can be selected independently.
+
+Choose **GPUStack (Qwen)** under AI Polish. The Qwen model comes from
+`gpustack_polish_model`, then `GPUSTACK_MODEL`, with `qwen3.8-27b-fp8` as the default.
+Polishing disables Qwen thinking mode and keeps the existing timeout and retry
+limit. The speech model remains independently configured as `breeze-asr-25`.
 
 Keep keys in the environment rather than in `config.json`. A key that came from
 the environment is never written back to `config.json`, so saving from the
@@ -102,20 +112,17 @@ settings dialog cannot copy it onto disk.
 
 - Config file permissions are automatically set to `600` (owner read/write only)
 - `config.json` is included in `.gitignore` to prevent accidental commits
-- Put keys in `~/.config/voxkeys/secrets.env` (mode `600`):
-  ```bash
-  export GITHUB_TOKEN="your-token-here"
-  ```
-  The launcher sources that file before starting the app. `~/.bashrc` does not
-  work here: a desktop launcher starts the app outside an interactive shell, so
-  nothing in your shell rc is ever read.
+- Keep API keys in a protected environment file loaded by the launcher, not in
+  source code. Reuse an existing GPUStack credential source rather than copying
+  its key into the application configuration.
 
 ## Notes
 
 - Linux only (X11). Global hotkeys may not work under Wayland
 - Selected-text edit mode is disabled in terminal/code windows so Voxkeys never sends Ctrl+C to Codex or shells
 - Whisper model is downloaded automatically on first run
-- GitHub Models is a free tier with sufficient daily quota for normal use
+- GitHub Models has been retired and is no longer a supported polishing provider.
+  Existing installations must select an available provider in Settings.
 
 ## License
 

@@ -134,7 +134,7 @@ PULSE_PERIOD_MS = 520
 PREVIEW_MAX = 30  # visual cells (CJK counts as 2)
 MAX_ROWS = 3
 WINDOW_W = 340
-WINDOW_H = 320  # fits the settings page even with the Groq key row shown
+WINDOW_H = 370  # fits the GPUStack endpoint/model controls on the settings page
 WINDOW_ALPHA = 0.92
 MIN_WINDOW_ALPHA = 0.70
 MAX_WINDOW_ALPHA = 1.0
@@ -242,11 +242,16 @@ class VoxkeysApp:
         out_lang = self.cfg.get("output_language", "")
         voxkeys.CONFIG["output_language"] = "" if out_lang in ("", "same") else out_lang
         voxkeys.CONFIG["provider"] = self.cfg["provider"] if self.use_ai else "none"
-        voxkeys.CONFIG["github_token"] = self.cfg["github_token"]
         voxkeys.CONFIG["openai_api_key"] = self.cfg["openai_api_key"]
         voxkeys.CONFIG["anthropic_api_key"] = self.cfg["anthropic_api_key"]
         voxkeys.CONFIG["stt_provider"] = self.cfg.get("stt_provider", "local")
         voxkeys.CONFIG["groq_api_key"] = self.cfg.get("groq_api_key", "")
+        voxkeys.CONFIG["gpustack_api_key"] = self.cfg.get("gpustack_api_key", "")
+        voxkeys.CONFIG["gpustack_base_url"] = self.cfg.get("gpustack_base_url", "")
+        voxkeys.CONFIG["gpustack_stt_model"] = self.cfg.get(
+            "gpustack_stt_model", voxkeys.GPUSTACK_STT_MODELS[0]
+        )
+        voxkeys.CONFIG["gpustack_polish_model"] = self.cfg["gpustack_polish_model"]
         voxkeys.CONFIG["per_app_prompts"] = bool(self.cfg.get("per_app_prompts", False))
         voxkeys.CONFIG["record_hotkey"] = self.cfg.get("record_hotkey", "f9")
         voxkeys.CONFIG["hotkey"] = None
@@ -875,7 +880,7 @@ class VoxkeysApp:
     # ─── Settings Page ───────────────────────────────────────────────────────
 
     PROVIDER_LABELS = {
-        "github": "GitHub Models (Free)",
+        "gpustack": "GPUStack (Qwen)",
         "openai": "OpenAI",
         "claude": "Claude",
     }
@@ -902,6 +907,7 @@ class VoxkeysApp:
     STT_PROVIDER_LABELS = {
         "local": "Local Whisper",
         "groq":  "Groq Cloud",
+        "gpustack": "GPUStack",
     }
     STT_PROVIDER_FROM_LABEL = {v: k for k, v in STT_PROVIDER_LABELS.items()}
 
@@ -939,7 +945,7 @@ class VoxkeysApp:
         self._sync_settings_actions()
 
     def _init_settings_vars(self):
-        provider = self.cfg["provider"] if self.cfg["provider"] in self.PROVIDER_LABELS else "github"
+        provider = self.cfg["provider"] if self.cfg["provider"] in self.PROVIDER_LABELS else "gpustack"
         provider_display = self.PROVIDER_LABELS[provider]
         self.provider_var = tk.StringVar(value=provider_display)
         self.key_var = tk.StringVar(value=self._current_key())
@@ -949,6 +955,12 @@ class VoxkeysApp:
         )
         self.stt_var = tk.StringVar(value=stt_display)
         self.model_var = tk.StringVar(value=self.cfg["whisper_model"])
+        self.gpustack_model_var = tk.StringVar(value=self.cfg.get(
+            "gpustack_stt_model", voxkeys.GPUSTACK_STT_MODELS[0]
+        ))
+        self.gpustack_url_var = tk.StringVar(value=self.cfg.get("gpustack_base_url", ""))
+        self.gpustack_key_var = tk.StringVar(value=self.cfg.get("gpustack_api_key", ""))
+        self.polish_model_var = tk.StringVar(value=self.cfg["gpustack_polish_model"])
         hotkey_display = HOTKEY_LABELS.get(
             self.cfg.get("record_hotkey", "f9"), "F9"
         )
@@ -972,6 +984,10 @@ class VoxkeysApp:
             self.model_var,
             self.hotkey_var,
             self.groq_var,
+            self.gpustack_model_var,
+            self.gpustack_url_var,
+            self.gpustack_key_var,
+            self.polish_model_var,
         ):
             var.trace_add("write", self._mark_settings_dirty)
 
@@ -984,9 +1000,14 @@ class VoxkeysApp:
         )
         provider_cb.bind("<<ComboboxSelected>>", self._on_provider_change)
 
-        key_row = self._row(parent)
-        self.key_label = self._row_label(key_row, self._key_label_text())
-        self.key_entry = self._entry(key_row, self.key_var)
+        self.polish_key_row = self._row(parent)
+        self.key_label = self._row_label(self.polish_key_row, self._key_label_text())
+        self.key_entry = self._entry(self.polish_key_row, self.key_var)
+        self.polish_model_frame = tk.Frame(parent, bg=C["base"])
+        self.polish_model_frame.pack(fill="x")
+        self.polish_model_row = self._row(self.polish_model_frame)
+        self._row_label(self.polish_model_row, "Qwen Model")
+        self._entry(self.polish_model_row, self.polish_model_var, secret=False)
 
         self._section_header(parent, "Speech Recognition")
 
@@ -996,7 +1017,8 @@ class VoxkeysApp:
         )
         stt_cb.bind("<<ComboboxSelected>>", self._on_stt_change)
 
-        self._combo_row(parent, "Whisper Model", self.model_var,
+        self.local_model_frame = tk.Frame(parent, bg=C["base"])
+        self._combo_row(self.local_model_frame, "Whisper Model", self.model_var,
                         ["tiny", "base", "small", "medium", "large-v3"])
 
         # Record Key is not exposed here — it stays whatever record_hotkey says in
@@ -1006,20 +1028,50 @@ class VoxkeysApp:
         groq_row = self._row(self.groq_key_frame)
         self._row_label(groq_row, "Groq API Key")
         self._entry(groq_row, self.groq_var)
-        self._sync_groq_key_visibility()
+        self.gpustack_frame = tk.Frame(parent, bg=C["base"])
+        gpustack_combo = self._combo_row(
+            self.gpustack_frame,
+            "GPUStack Model",
+            self.gpustack_model_var,
+            list(voxkeys.GPUSTACK_STT_MODELS),
+        )
+        self.gpustack_stt_row = gpustack_combo.master
+        self.gpustack_url_row = self._row(self.gpustack_frame)
+        self._row_label(self.gpustack_url_row, "GPUStack URL")
+        self._entry(self.gpustack_url_row, self.gpustack_url_var, secret=False)
+        gpustack_key_row = self._row(self.gpustack_frame)
+        self._row_label(gpustack_key_row, "GPUStack Key")
+        self._entry(gpustack_key_row, self.gpustack_key_var)
+
+        self._sync_stt_fields_visibility()
+        self._sync_polish_fields_visibility()
 
     def _on_stt_change(self, event=None):
-        self._sync_groq_key_visibility()
+        self._sync_stt_fields_visibility()
 
-    def _sync_groq_key_visibility(self):
+    def _sync_stt_fields_visibility(self):
         if not hasattr(self, "groq_key_frame"):
             return
         stt = self.STT_PROVIDER_FROM_LABEL.get(self.stt_var.get(), "local")
-        if stt == "groq":
-            if not self.groq_key_frame.winfo_manager():
-                self.groq_key_frame.pack(fill="x")
+        frames = {
+            "local": self.local_model_frame,
+            "groq": self.groq_key_frame,
+        }
+        for provider, frame in frames.items():
+            if provider == stt:
+                if not frame.winfo_manager():
+                    frame.pack(fill="x")
+            else:
+                frame.pack_forget()
+        uses_gpustack = stt == "gpustack" or self._selected_provider() == "gpustack"
+        if uses_gpustack:
+            self.gpustack_frame.pack(fill="x")
         else:
-            self.groq_key_frame.pack_forget()
+            self.gpustack_frame.pack_forget()
+        if stt == "gpustack":
+            self.gpustack_stt_row.pack(fill="x", pady=(0, 7), before=self.gpustack_url_row)
+        else:
+            self.gpustack_stt_row.pack_forget()
 
     def _row(self, parent):
         row = tk.Frame(parent, bg=C["base"])
@@ -1040,8 +1092,8 @@ class VoxkeysApp:
         combo.pack(side="right", ipady=1, padx=(0, 8))
         return combo
 
-    def _entry(self, row, variable):
-        entry = tk.Entry(row, textvariable=variable, show="•",
+    def _entry(self, row, variable, *, secret=True):
+        entry = tk.Entry(row, textvariable=variable, show="•" if secret else "",
                          font=FONT_MONO_ENTRY,
                          bg=C["surface0"], fg=C["text"],
                          insertbackground=C["text"],
@@ -1069,19 +1121,27 @@ class VoxkeysApp:
 
     def _key_label_text(self):
         p = self._selected_provider()
-        names = {"github": "GitHub Token", "openai": "OpenAI API Key",
-                 "claude": "Anthropic API Key"}
+        names = {"openai": "OpenAI API Key", "claude": "Anthropic API Key"}
         return names.get(p, "API Key")
 
     def _current_key(self):
         p = self._selected_provider()
-        keys = {"github": "github_token", "openai": "openai_api_key",
-                "claude": "anthropic_api_key"}
+        keys = {"openai": "openai_api_key", "claude": "anthropic_api_key"}
         return self.cfg.get(keys.get(p, ""), "")
 
     def _on_provider_change(self, event=None):
         self.key_label.config(text=self._key_label_text())
         self.key_var.set(self._current_key())
+        self._sync_polish_fields_visibility()
+        self._sync_stt_fields_visibility()
+
+    def _sync_polish_fields_visibility(self):
+        if self._selected_provider() == "gpustack":
+            self.polish_key_row.pack_forget()
+            self.polish_model_row.pack(fill="x", pady=(0, 7))
+        else:
+            self.polish_key_row.pack(fill="x", pady=(0, 7), before=self.polish_model_frame)
+            self.polish_model_row.pack_forget()
 
     def _settings_values(self):
         return {
@@ -1091,6 +1151,10 @@ class VoxkeysApp:
             "whisper_model": self.model_var.get(),
             "record_hotkey": HOTKEY_FROM_LABEL.get(self.hotkey_var.get(), "f9"),
             "groq_api_key": self.groq_var.get(),
+            "gpustack_stt_model": self.gpustack_model_var.get(),
+            "gpustack_base_url": self.gpustack_url_var.get(),
+            "gpustack_api_key": self.gpustack_key_var.get(),
+            "gpustack_polish_model": self.polish_model_var.get(),
         }
 
     def _mark_settings_dirty(self, *_args):
@@ -1111,7 +1175,7 @@ class VoxkeysApp:
 
     def _cancel_settings_changes(self):
         self._settings_loading = True
-        provider = self.cfg["provider"] if self.cfg["provider"] in self.PROVIDER_LABELS else "github"
+        provider = self.cfg["provider"] if self.cfg["provider"] in self.PROVIDER_LABELS else "gpustack"
         self.provider_var.set(self.PROVIDER_LABELS[provider])
         self.key_var.set(self._current_key())
         stt_display = self.STT_PROVIDER_LABELS.get(
@@ -1123,9 +1187,16 @@ class VoxkeysApp:
             HOTKEY_LABELS.get(self.cfg.get("record_hotkey", "f9"), "F9")
         )
         self.groq_var.set(self.cfg.get("groq_api_key", ""))
+        self.gpustack_model_var.set(self.cfg.get(
+            "gpustack_stt_model", voxkeys.GPUSTACK_STT_MODELS[0]
+        ))
+        self.gpustack_url_var.set(self.cfg.get("gpustack_base_url", ""))
+        self.gpustack_key_var.set(self.cfg.get("gpustack_api_key", ""))
+        self.polish_model_var.set(self.cfg["gpustack_polish_model"])
         if hasattr(self, "key_label") and self.key_label.winfo_exists():
             self.key_label.config(text=self._key_label_text())
-        self._sync_groq_key_visibility()
+        self._sync_stt_fields_visibility()
+        self._sync_polish_fields_visibility()
         self._settings_snapshot = self._settings_values()
         self._settings_dirty = False
         self._settings_loading = False
@@ -1133,7 +1204,7 @@ class VoxkeysApp:
 
     def _save_settings(self):
         provider = self._selected_provider()
-        key_field = {"github": "github_token", "openai": "openai_api_key",
+        key_field = {"openai": "openai_api_key",
                      "claude": "anthropic_api_key"}.get(provider)
         stt = self.STT_PROVIDER_FROM_LABEL.get(self.stt_var.get(), "local")
 
@@ -1145,6 +1216,10 @@ class VoxkeysApp:
             "output_language": self.cfg.get("output_language", ""),
             "stt_provider": stt,
             "groq_api_key": self.groq_var.get(),
+            "gpustack_stt_model": self.gpustack_model_var.get(),
+            "gpustack_base_url": self.gpustack_url_var.get().rstrip("/"),
+            "gpustack_api_key": self.gpustack_key_var.get(),
+            "gpustack_polish_model": self.polish_model_var.get().strip(),
             "per_app_prompts": bool(self.cfg.get("per_app_prompts", False)),
         }
         if key_field:

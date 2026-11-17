@@ -11,16 +11,19 @@ CONFIG_DIR = os.path.expanduser("~/.config/voxkeys")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 
 DEFAULT_CONFIG = {
-    "provider": "github",
-    "github_token": "",
+    "provider": "gpustack",
     "openai_api_key": "",
     "anthropic_api_key": "",
     "whisper_model": "small",
     "language": "zh",
     "output_language": "",
-    # STT backend: "local" (faster-whisper on CPU) or "groq" (cloud whisper-large-v3).
+    # STT backend: local faster-whisper, Groq, or an OpenAI-compatible GPUStack.
     "stt_provider": "local",
     "groq_api_key": "",
+    "gpustack_api_key": "",
+    "gpustack_base_url": "",
+    "gpustack_stt_model": "breeze-asr-25",
+    "gpustack_polish_model": "",
     # Per-app prompts: when on, voxkeys detects the active window and adapts tone
     # (terminal / chat / email / code / social).
     "per_app_prompts": False,
@@ -33,10 +36,10 @@ DEFAULT_CONFIG = {
 # never written back to config.json (see save_config), so putting a token in
 # the environment keeps it out of the file the settings dialog rewrites.
 ENV_KEYS = {
-    "github_token": "GITHUB_TOKEN",
     "openai_api_key": "OPENAI_API_KEY",
     "anthropic_api_key": "ANTHROPIC_API_KEY",
     "groq_api_key": "GROQ_API_KEY",
+    "gpustack_api_key": "GPUSTACK_API_KEY",
 }
 
 
@@ -60,6 +63,13 @@ def load_config():
     for field, env_name in ENV_KEYS.items():
         if not config.get(field):
             config[field] = os.environ.get(env_name, "")
+
+    # The endpoint is not secret, but keeping it in the shared GPUStack env file
+    # means Voxkeys and other clients use the same source of truth.
+    if not config.get("gpustack_base_url"):
+        config["gpustack_base_url"] = os.environ.get("GPUSTACK_BASE_URL", "")
+    if not config.get("gpustack_polish_model"):
+        config["gpustack_polish_model"] = os.environ.get("GPUSTACK_MODEL", "qwen3.8-27b-fp8")
 
     return config
 
