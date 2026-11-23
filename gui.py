@@ -1381,7 +1381,7 @@ class VoxkeysApp:
         if x is None or y is None:
             x = (cap.winfo_screenwidth() - self._cap_w) // 2
             y = cap.winfo_screenheight() - self._cap_h - 72
-        self._cap_pos = (int(x), int(y))
+        self._cap_pos = self._cap_clamp(int(x), int(y))
         self._cap_place()
         if self.cfg.get("capsule_visible", True):
             self._show_capsule()
@@ -1466,6 +1466,25 @@ class VoxkeysApp:
             text = text[:-1]
         return text + "…"
 
+    def _cap_clamp(self, x, y):
+        """Keep the capsule inside the usable screen area.
+
+        Cinnamon takes every mouse click over its panel, so a capsule dropped
+        on the taskbar is still drawn there but can no longer be grabbed.
+        """
+        left, top = 0, 0
+        right, bottom = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        try:
+            out = subprocess.run(["xprop", "-root", "_NET_WORKAREA"],
+                                 capture_output=True, text=True, timeout=1).stdout
+            l, t, w, h = (int(v) for v in out.split("=", 1)[1].split(",")[:4])
+            left, top, right, bottom = l, t, l + w, t + h
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+            pass
+        x = max(left, min(x, right - self._cap_w))
+        y = max(top, min(y, bottom - self._cap_h))
+        return (x, y)
+
     def _cap_place(self):
         self.capsule.geometry(f"{self._cap_w}x{self._cap_h}+{self._cap_pos[0]}+{self._cap_pos[1]}")
 
@@ -1476,7 +1495,8 @@ class VoxkeysApp:
         if not self._cap_resize:
             return
         x0, w0 = self._cap_resize
-        self._cap_w = max(CAPSULE_MIN_W, w0 + event.x_root - x0)
+        right = self.root.winfo_screenwidth() - self._cap_pos[0]
+        self._cap_w = max(CAPSULE_MIN_W, min(right, w0 + event.x_root - x0))
         self._cap_place()
         self._cap_render()
 
@@ -1506,6 +1526,8 @@ class VoxkeysApp:
         if not drag:
             return
         if drag[4]:
+            self._cap_pos = self._cap_clamp(*self._cap_pos)
+            self._cap_place()
             self.cfg["capsule_x"], self.cfg["capsule_y"] = self._cap_pos
             save_config({"capsule_x": self._cap_pos[0], "capsule_y": self._cap_pos[1]})
         else:
