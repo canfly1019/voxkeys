@@ -1393,7 +1393,8 @@ class VoxkeysApp:
         self._cap_cv = cv
         mid = CAPSULE_H // 2
         self._cap_bg = cv.create_image(0, 0, anchor="nw")
-        cv.create_image(6, mid, anchor="w", image=draw.logo(ICON_PATH, CAPSULE_H - 12, C["base"]))
+        # Inset so the square logo's corners clear the pill's round end.
+        cv.create_image(12, mid, anchor="w", image=draw.logo(ICON_PATH, CAPSULE_H - 16, C["base"]))
         self._cap_dot = cv.create_image(CAPSULE_H + 8, mid)
         self._cap_lbl = cv.create_text(CAPSULE_H + 20, mid, anchor="w", font=self._cap_font)
         self._cap_badge_bg = cv.create_image(0, mid, anchor="e", state="hidden")
