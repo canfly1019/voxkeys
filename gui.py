@@ -141,6 +141,7 @@ WINDOW_ALPHA = 1.0
 MIN_WINDOW_ALPHA = 0.70
 MAX_WINDOW_ALPHA = 1.0
 TOOLTIP_DELAY_MS = 450
+LANG_MENU_POST_DELAY_MS = 120  # let the WM finish focusing the panel first
 
 LANG_NAMES = {"auto": "自動", "zh": "繁中", "zh-cn": "簡中", "en": "英文", "ja": "日文"}
 INPUT_LANGS = ("auto", "zh", "zh-cn", "en", "ja")
@@ -483,6 +484,12 @@ class VoxkeysApp:
         self.lang_pill.pack(side="right")
         self.lang_pill.bind("<Enter>", lambda _e: self.lang_pill.config(image=self._lang_imgs[1]))
         self.lang_pill.bind("<Leave>", lambda _e: self.lang_pill.config(image=self._lang_imgs[0]))
+        # Cinnamon is click-to-focus: when the panel isn't focused, the first
+        # press also makes the WM focus/raise it, and a menu posted during that
+        # press closes immediately (it only works on the second click). So the
+        # Menubutton's own post is skipped and the menu is posted after the WM
+        # has settled.
+        self.lang_pill.bind("<ButtonPress-1>", self._press_lang_pill)
         self._lang_in_var = tk.StringVar()
         self._lang_out_var = tk.StringVar()
         self._refresh_lang_chip()
@@ -1634,6 +1641,21 @@ class VoxkeysApp:
     # Invariant: the capsule or the panel is always on screen, so Voxkeys can
     # never vanish entirely. Withdraw is used instead of iconify because the
     # window manager here ignores iconify requests.
+
+    def _press_lang_pill(self, _event):
+        self.root.lift()
+        self.root.focus_force()
+        self.root.after(LANG_MENU_POST_DELAY_MS, self._post_lang_menu)
+        return "break"
+
+    def _post_lang_menu(self):
+        pill, menu = self.lang_pill, self.lang_menu
+        if not pill.winfo_viewable():
+            return
+        self._fill_lang_menu()
+        menu.update_idletasks()
+        # Open above the pill like direction="above"; tk_popup keeps it on screen.
+        menu.tk_popup(pill.winfo_rootx(), pill.winfo_rooty() - menu.winfo_reqheight())
 
     def _toggle_panel(self):
         if self.root.state() == "normal":
