@@ -231,9 +231,14 @@ class VoxkeysApp:
         self.missing_deps = voxkeys.check_dependencies()
 
         self._build_main_page()
+        self._build_capsule()
         if not self.missing_deps:
             self._start_listener()
             self._preload_local_whisper()
+        # With the capsule on, start collapsed: only the capsule shows, and
+        # clicking it opens this panel.
+        if self.cfg.get("capsule_visible", True) and not self.missing_deps:
+            self.root.withdraw()
 
     def _apply_config(self):
         voxkeys.CONFIG["whisper_model"] = self.cfg["whisper_model"]
@@ -284,6 +289,8 @@ class VoxkeysApp:
 
         make_button(btn_frame, "⚙", self._build_settings_page,
                     font=(FONT_FAMILY, 13)).pack(side="left", padx=(0, 8))
+        make_button(btn_frame, "—", self._collapse_panel,
+                    font=(FONT_FAMILY, 13)).pack(side="left")
 
         # Separator
         tk.Frame(self.root, bg=C["surface0"], height=1).pack(fill="x", padx=16, pady=8)
@@ -361,6 +368,15 @@ class VoxkeysApp:
 
         opacity_row = tk.Frame(ai_frame, bg=C["base"])
         opacity_row.pack(fill="x", pady=(8, 0))
+        self.capsule_var = tk.BooleanVar(value=bool(self.cfg.get("capsule_visible", True)))
+        tk.Checkbutton(
+            opacity_row, text="Capsule", variable=self.capsule_var,
+            font=FONT_TINY, bg=C["base"], fg=C["overlay0"],
+            selectcolor=C["surface0"], activebackground=C["base"],
+            activeforeground=C["text"], cursor="hand2",
+            highlightthickness=0, padx=0, pady=0, takefocus=True,
+            command=lambda: self._set_capsule_visible(self.capsule_var.get()),
+        ).pack(side="left", padx=(0, 10))
         tk.Label(opacity_row, text="Opacity", font=FONT_TINY,
                  bg=C["base"], fg=C["overlay0"]).pack(side="left")
         alpha = self.cfg.get("window_alpha", WINDOW_ALPHA)
@@ -826,6 +842,8 @@ class VoxkeysApp:
             pass
 
     def _apply_event(self, e):
+        # The capsule tracks every job even while the settings page is open.
+        self._capsule_on_event(e)
         if self.showing_settings or not hasattr(self, "list_frame"):
             return
         if not self.list_frame.winfo_exists():
@@ -1287,6 +1305,203 @@ class VoxkeysApp:
         make_button(body, "Open settings", self._build_settings_page,
                     variant="primary").pack(pady=(12, 0))
 
+    # ─── Floating Capsule ────────────────────────────────────────────────────
+
+    CAPSULE_TERMINAL = {"done", "polish_failed", "empty", "error"}
+    CAPSULE_FLASH_MS = 2000
+
+    def _build_capsule(self):
+        """Small always-on-top status pill. Drag to move, click to open the panel."""
+        cap = tk.Toplevel(self.root)
+        cap.wm_overrideredirect(True)
+        cap.attributes("-topmost", True)
+        try:
+            cap.attributes("-type", "dock")  # keep it out of the taskbar / alt-tab
+        except tk.TclError:
+            pass
+        cap.configure(bg=C["base"], highlightthickness=2,
+                      highlightbackground=C["surface1"], highlightcolor=C["surface1"])
+        self.capsule = cap
+        self._cap_jobs = {}           # job_id -> phase, busy jobs only
+        self._cap_rec_start = None
+        self._cap_flash = None        # (icon, color_key, text) of last finished job
+        self._cap_flash_after = None
+        self._cap_tick_after = None
+        self._cap_spin_i = 0
+        self._cap_drag = None
+
+        inner = tk.Frame(cap, bg=C["base"], padx=12, pady=6)
+        inner.pack()
+        self._cap_dot = tk.Label(inner, font=FONT_BODY_BOLD, bg=C["base"])
+        self._cap_dot.pack(side="left")
+        self._cap_lbl = tk.Label(inner, font=FONT_SMALL, bg=C["base"], fg=C["text"])
+        self._cap_lbl.pack(side="left", padx=(6, 0))
+        self._cap_badge = tk.Label(inner, font=FONT_TINY_BOLD, bg=C["mauve"],
+                                   fg=C["crust"], padx=6)
+        for w in (cap, inner, self._cap_dot, self._cap_lbl, self._cap_badge):
+            w.bind("<ButtonPress-1>", self._cap_press)
+            w.bind("<B1-Motion>", self._cap_motion)
+            w.bind("<ButtonRelease-1>", self._cap_release)
+            w.bind("<Button-3>", self._cap_menu)
+
+        self._cap_popup = tk.Menu(cap, tearoff=0, bg=C["surface0"], fg=C["text"],
+                                  activebackground=C["surface1"], activeforeground=C["text"])
+        self._cap_popup.add_command(label="Open panel", command=self._open_panel)
+        self._cap_popup.add_command(label="Hide capsule",
+                                    command=lambda: self._set_capsule_visible(False))
+        self._cap_popup.add_separator()
+        self._cap_popup.add_command(label="Quit Voxkeys", command=self._on_close)
+
+        self._cap_render()
+        cap.update_idletasks()
+        x, y = self.cfg.get("capsule_x"), self.cfg.get("capsule_y")
+        if x is None or y is None:
+            x = (cap.winfo_screenwidth() - cap.winfo_reqwidth()) // 2
+            y = cap.winfo_screenheight() - cap.winfo_reqheight() - 72
+        self._cap_pos = (int(x), int(y))
+        if self.cfg.get("capsule_visible", True):
+            self._show_capsule()
+        else:
+            cap.withdraw()
+
+    def _cap_on_event_phase(self, jid, phase, e):
+        if phase == "recording":
+            self._cap_rec_start = time.monotonic()
+        if phase in self.CAPSULE_TERMINAL:
+            self._cap_jobs.pop(jid, None)
+            icon, color, label = PHASE_VISUALS[phase]
+            text = label or e.get("error") or e.get("polished_text") or e.get("raw_text") or ""
+            self._cap_flash = (icon, color, self._truncate(text, 34))
+            if self._cap_flash_after:
+                self.root.after_cancel(self._cap_flash_after)
+            self._cap_flash_after = self.root.after(self.CAPSULE_FLASH_MS, self._cap_end_flash)
+        else:
+            self._cap_jobs[jid] = phase
+
+    def _capsule_on_event(self, e):
+        jid = e.get("job_id")
+        phase = e.get("phase")
+        if jid is None or phase not in PHASE_VISUALS:
+            return
+        self._cap_on_event_phase(jid, phase, e)
+        self._cap_render()
+
+    def _cap_end_flash(self):
+        self._cap_flash = None
+        self._cap_flash_after = None
+        self._cap_render()
+
+    def _cap_render(self):
+        """Draw the capsule from current state: recording > busy > flash > idle."""
+        if self._cap_tick_after:
+            self.root.after_cancel(self._cap_tick_after)
+            self._cap_tick_after = None
+        phases = list(self._cap_jobs.values())
+        busy = [p for p in phases if p in SPINNING_PHASES]
+        badge = ""
+        if "recording" in phases:
+            secs = int(time.monotonic() - (self._cap_rec_start or time.monotonic()))
+            on = (int(time.monotonic() * 1000) // PULSE_PERIOD_MS) % 2 == 0
+            dot, color, text = ("●" if on else "○"), "green", f"Recording  {secs // 60}:{secs % 60:02d}"
+            if busy:
+                badge = f"+{len(busy)}"
+            self._cap_tick_after = self.root.after(250, self._cap_render)
+        elif busy:
+            self._cap_spin_i = (self._cap_spin_i + 1) % len(SPIN_FRAMES)
+            dot, color = SPIN_FRAMES[self._cap_spin_i], "yellow"
+            # Name the job actually being worked on, not one still waiting.
+            active = [p for p in busy if p != "queued"]
+            text = PHASE_VISUALS[(active or busy)[0]][2]
+            if len(busy) > 1:
+                badge = f"+{len(busy) - 1}"
+            self._cap_tick_after = self.root.after(SPIN_PERIOD_MS, self._cap_render)
+        elif self._cap_flash:
+            dot, color, text = self._cap_flash
+        else:
+            dot, color, text = "●", "overlay0", f"{self._hotkey_text()}  Dictate"
+        border = C["surface1"] if color == "overlay0" else C[color]
+        self.capsule.configure(highlightbackground=border, highlightcolor=border)
+        self._cap_dot.config(text=dot, fg=C[color])
+        self._cap_lbl.config(text=text, fg=C["subtext"] if color == "overlay0" else C["text"])
+        if badge:
+            self._cap_badge.config(text=badge)
+            self._cap_badge.pack(side="left", padx=(8, 0))
+        else:
+            self._cap_badge.pack_forget()
+
+    def _cap_press(self, event):
+        self._cap_drag = (event.x_root, event.y_root,
+                          self.capsule.winfo_x(), self.capsule.winfo_y(), False)
+
+    def _cap_motion(self, event):
+        if not self._cap_drag:
+            return
+        x0, y0, wx, wy, moved = self._cap_drag
+        dx, dy = event.x_root - x0, event.y_root - y0
+        if not moved and abs(dx) + abs(dy) < 4:
+            return  # small jitter still counts as a click
+        self._cap_drag = (x0, y0, wx, wy, True)
+        self._cap_pos = (wx + dx, wy + dy)
+        self.capsule.geometry(f"+{self._cap_pos[0]}+{self._cap_pos[1]}")
+
+    def _cap_release(self, _event):
+        drag, self._cap_drag = self._cap_drag, None
+        if not drag:
+            return
+        if drag[4]:
+            self.cfg["capsule_x"], self.cfg["capsule_y"] = self._cap_pos
+            save_config({"capsule_x": self._cap_pos[0], "capsule_y": self._cap_pos[1]})
+        else:
+            self._toggle_panel()
+
+    def _cap_menu(self, event):
+        try:
+            self._cap_popup.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._cap_popup.grab_release()
+
+    # Invariant: the capsule or the panel is always on screen, so Voxkeys can
+    # never vanish entirely. Withdraw is used instead of iconify because the
+    # window manager here ignores iconify requests.
+
+    def _toggle_panel(self):
+        if self.root.state() == "normal":
+            self._collapse_panel()
+        else:
+            self._open_panel()
+
+    def _open_panel(self):
+        self.root.deiconify()
+        self.root.lift()
+
+    def _collapse_panel(self):
+        if not self.cfg.get("capsule_visible", True):
+            self._set_capsule_visible(True)
+        self.root.withdraw()
+
+    def _show_capsule(self):
+        self.capsule.deiconify()
+        self.capsule.attributes("-topmost", True)
+        self.capsule.lift()
+        # Tk maps an override-redirect window at +0+0 and drops a geometry set
+        # before the map finishes, so place it once the map has settled.
+        self.capsule.after(60, lambda: self.capsule.geometry(
+            f"+{self._cap_pos[0]}+{self._cap_pos[1]}"))
+
+    def _set_capsule_visible(self, visible):
+        self.cfg["capsule_visible"] = bool(visible)
+        save_config({"capsule_visible": self.cfg["capsule_visible"]})
+        if hasattr(self, "capsule_var") and self.capsule_var.get() != visible:
+            try:
+                self.capsule_var.set(visible)
+            except tk.TclError:
+                pass
+        if visible:
+            self._show_capsule()
+        else:
+            self.capsule.withdraw()
+            self._open_panel()
+
     # ─── Utilities ───────────────────────────────────────────────────────────
 
     def _resize(self, w, h):
@@ -1295,8 +1510,10 @@ class VoxkeysApp:
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
     def _clear(self):
+        # The capsule is a Toplevel child of root; page switches must not destroy it.
         for w in self.root.winfo_children():
-            w.destroy()
+            if w is not getattr(self, "capsule", None):
+                w.destroy()
 
     def _on_close(self):
         if hasattr(self, "listener"):

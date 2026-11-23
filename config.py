@@ -31,6 +31,11 @@ DEFAULT_CONFIG = {
     "per_app_prompts": False,
     "record_hotkey": "f9",
     "window_alpha": 0.92,
+    # Floating capsule: a small always-on-top status pill that can be dragged
+    # anywhere; clicking it opens the full panel. Position None = bottom centre.
+    "capsule_visible": True,
+    "capsule_x": None,
+    "capsule_y": None,
 }
 
 
