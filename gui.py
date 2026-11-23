@@ -338,6 +338,7 @@ class VoxkeysApp:
         )
         voxkeys.CONFIG["gpustack_polish_model"] = self.cfg["gpustack_polish_model"]
         voxkeys.CONFIG["per_app_prompts"] = bool(self.cfg.get("per_app_prompts", False))
+        voxkeys.CONFIG["auto_submit"] = bool(self.cfg.get("auto_submit", True))
         voxkeys.CONFIG["record_hotkey"] = self.cfg.get("record_hotkey", "f9")
         voxkeys.CONFIG["hotkey"] = None
         voxkeys.CONFIG["hotkey_display"] = HOTKEY_LABELS.get(
@@ -441,6 +442,9 @@ class VoxkeysApp:
         self.ai_var = tk.BooleanVar(value=self.use_ai)
         SettingSwitch(bottom, "AI 潤稿", "貼上前修標點與錯字",
                       self.ai_var, self._toggle_ai).pack(fill="x")
+        self.submit_var = tk.BooleanVar(value=bool(self.cfg.get("auto_submit", True)))
+        SettingSwitch(bottom, "貼上後送出", "仍在原視窗時自動按 Enter",
+                      self.submit_var, self._toggle_auto_submit).pack(fill="x", pady=(10, 0))
         self.capsule_var = tk.BooleanVar(value=bool(self.cfg.get("capsule_visible", True)))
         SettingSwitch(bottom, "浮動膠囊", "螢幕上常駐的錄音狀態條", self.capsule_var,
                       lambda: self._set_capsule_visible(self.capsule_var.get()),
@@ -502,6 +506,12 @@ class VoxkeysApp:
         self.cfg["per_app_prompts"] = enabled
         voxkeys.CONFIG["per_app_prompts"] = enabled
         save_config({"per_app_prompts": enabled})
+
+    def _toggle_auto_submit(self):
+        enabled = bool(self.submit_var.get())
+        self.cfg["auto_submit"] = enabled
+        voxkeys.CONFIG["auto_submit"] = enabled
+        save_config({"auto_submit": enabled})
 
     def _on_alpha_change(self, value):
         self.alpha_value.config(text=f"{value}%")

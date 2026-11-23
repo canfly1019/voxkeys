@@ -30,6 +30,9 @@ DEFAULT_CONFIG = {
     # (terminal / chat / email / code / social).
     "per_app_prompts": False,
     "record_hotkey": "f9",
+    # Press Enter after pasting, only if the user is still in the window they
+    # started recording in.
+    "auto_submit": True,
     "window_alpha": 0.92,
     # Floating capsule: a small always-on-top status pill that can be dragged
     # anywhere; clicking it opens the full panel. Position None = bottom centre.

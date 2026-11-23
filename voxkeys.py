@@ -867,7 +867,7 @@ def _wait_clipboard_equals(text: str, timeout: float = _CLIPBOARD_SETTLE_TIMEOUT
     return False
 
 
-def output_text(text, *, target_window: Optional[str] = None):
+def output_text(text, *, target_window: Optional[str] = None, submit: bool = False):
     """Paste text into the window the user was in when they started recording.
 
     - Re-activates `target_window` before pasting so focus drift during
@@ -875,13 +875,18 @@ def output_text(text, *, target_window: Optional[str] = None):
     - Snapshots CLIPBOARD before overwrite and restores it after paste so the
       user's previous copy buffer is not permanently clobbered.
     - Falls back to the currently focused window if the target is gone.
+    - With `submit`, presses Enter after pasting, but only when the user is
+      still in the original window: if they moved on, the text is left for
+      them to review.
     """
     if not text:
         return
 
+    still_there = bool(target_window) and _get_active_window_id() == target_window
     wid = target_window if _window_alive(target_window or "") else ""
     if not wid:
         wid = _get_active_window_id()
+    press_enter = submit and still_there
 
     if CONFIG["output_mode"] != "clipboard":
         if wid:
@@ -889,6 +894,8 @@ def output_text(text, *, target_window: Optional[str] = None):
             time.sleep(0.05)
         ctrl = get_keyboard().Controller()
         ctrl.type(text)
+        if press_enter:
+            _press_enter()
         return
 
     previous = _read_clipboard()
@@ -910,12 +917,22 @@ def output_text(text, *, target_window: Optional[str] = None):
             ["xdotool", "key", "--clearmodifiers", "ctrl+v"],
             capture_output=True, timeout=2,
         )
+    if press_enter:
+        _press_enter()
 
     # Give the app time to read CLIPBOARD before we put the old value back.
     # Skip restore when there is nothing to restore or it already matches.
     if previous != text:
         time.sleep(_CLIPBOARD_RESTORE_DELAY)
         _write_clipboard(previous)
+
+
+def _press_enter():
+    # Let the app finish handling the paste first, or Enter can land before
+    # the text does.
+    time.sleep(0.15)
+    subprocess.run(["xdotool", "key", "--clearmodifiers", "Return"],
+                   capture_output=True, timeout=2)
 
 
 # ─── Worker Thread ───────────────────────────────────────────────────────────
@@ -982,7 +999,9 @@ def _process_job(job: Job):
         if zh_tw_target:
             polished = _normalize_zh_tw(polished)
         job.polished_text = polished
-        output_text(polished, target_window=job.target_window)
+        # Edit mode replaces a selection; never submit that on the user's behalf.
+        output_text(polished, target_window=job.target_window,
+                    submit=bool(CONFIG.get("auto_submit")) and job.edit_source is None)
         # If polish raised, _polish_job already emitted "polish_failed" — keep
         # that phase so the GUI shows the row as a fallback (raw text pasted),
         # not a clean success.

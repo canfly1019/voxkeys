@@ -10,6 +10,7 @@ Linux voice dictation tool. Hold a hotkey to speak, auto-transcribe, paste to cu
 - **Optional AI text polish** (off by default): Auto-fix typos, add punctuation, remove filler words. Turn it on with the **AI Polish** toggle or `"provider"` in the config
 - **Multi-provider support**: GPUStack (Qwen) / OpenAI / Claude
 - **Auto-paste**: Result pasted into the window you were in when you pressed the hotkey (focus is restored if it drifted during processing); previous clipboard contents are restored after paste
++- **Submit after paste** (on by default): Presses Enter after pasting when you are still in the window where you started recording; if you switched away, the text is pasted but not sent. Never applies to edit-by-voice. Toggle it with **貼上後送出** in the panel or `"auto_submit"` in the config
 - **GUI mode**: Tkinter floating window with real-time status
 - **CLI mode**: Terminal-based, for advanced users
 
