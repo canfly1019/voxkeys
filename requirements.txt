@@ -3,6 +3,8 @@ pyaudio
 pynput
 openai
 requests
+pillow
+python-xlib
 
 # Optional:
 # anthropic  — only needed when provider=claude

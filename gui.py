@@ -17,6 +17,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
 
+import draw
 import voxkeys
 from config import load_config, save_config
 
@@ -48,7 +49,7 @@ C = {
 
 FONT_FAMILY = "Noto Sans"
 MONO_FAMILY = "Noto Sans Mono"
-FONT_TITLE = (FONT_FAMILY, 14, "bold")
+FONT_TITLE = (FONT_FAMILY, 12, "bold")
 FONT_SECTION = (FONT_FAMILY, 9, "bold")
 FONT_BODY = (FONT_FAMILY, 10)
 FONT_BODY_BOLD = (FONT_FAMILY, 10, "bold")
@@ -103,125 +104,111 @@ def setup_theme(root):
     root.option_add("*TCombobox*Listbox.selectBackground", C["surface1"])
     root.option_add("*TCombobox*Listbox.selectForeground", C["text"])
 
-    style.configure("Voxkeys.Horizontal.TScale",
-                    background=C["base"],
-                    troughcolor=C["surface0"],
-                    bordercolor=C["surface0"],
-                    lightcolor=C["mauve"],
-                    darkcolor=C["mauve"],
-                    sliderlength=18,
-                    sliderthickness=12,
-                    relief="flat")
-    style.map("Voxkeys.Horizontal.TScale",
-              background=[("active", C["mauve"])],
-              troughcolor=[("active", C["surface1"])])
-
 # ─── Job row visuals ─────────────────────────────────────────────────────────
 
-# (icon, color_key, label_text). label_text=None means "show preview of text".
+# (icon kind, color_key, label_text). label_text=None means "show the text".
+# Icon kinds are drawn by draw.status_icon.
 PHASE_VISUALS = {
-    "recording":     ("●", "green",    "Recording…"),
-    "queued":        ("◐", "subtext",  "Queued…"),
-    "loading_model": ("◐", "yellow",   "Loading model…"),
-    "transcribing":  ("◐", "yellow",   "Transcribing…"),
-    "transcribed":   ("◐", "yellow",   "Processing…"),  # transient: bridges to polishing or done
-    "polishing":     ("◐", "yellow",   "Polishing…"),
-    "done":          ("✓", "green",    None),
-    "polish_failed": ("✓", "yellow",   None),
-    "empty":         ("·", "overlay0", "(no speech)"),
-    "error":         ("⚠", "red",      None),
+    "recording":     ("dot",   "green",    "錄音中…"),
+    "queued":        ("spin",  "subtext",  "排隊中…"),
+    "loading_model": ("spin",  "yellow",   "載入模型…"),
+    "transcribing":  ("spin",  "yellow",   "轉文字中…"),
+    "transcribed":   ("spin",  "yellow",   "處理中…"),  # transient: bridges to polishing or done
+    "polishing":     ("spin",  "yellow",   "潤稿中…"),
+    "done":          ("check", "green",    None),
+    "polish_failed": ("check", "yellow",   None),
+    "empty":         ("dash",  "overlay0", "沒有聽到聲音"),
+    "error":         ("cross", "red",      None),
 }
 
 # Phases that should drive a spinning indicator on the row dot.
 SPINNING_PHASES = {"queued", "loading_model", "transcribing", "transcribed", "polishing"}
-SPIN_FRAMES = "◐◓◑◒"
-SPIN_PERIOD_MS = 180
+SPIN_PERIOD_MS = 90
 PULSE_PERIOD_MS = 520
 
-PREVIEW_MAX = 30  # visual cells (CJK counts as 2)
 MAX_ROWS = 3
+ROW_H = 36
 CAPSULE_DEFAULT_W = 260
-CAPSULE_MIN_W = 120
-CAPSULE_FONT = (FONT_FAMILY, 11)
-WINDOW_W = 340
-WINDOW_H = 370  # fits the GPUStack endpoint/model controls on the settings page
+CAPSULE_MIN_W = 160
+CAPSULE_H = 34
+CAPSULE_GRIP = 12  # right-end strip that resizes instead of moving
+CAPSULE_FONT = FONT_BODY
+WINDOW_W = 260
+WINDOW_RADIUS = 14
+HEADER_H = 56
+MAIN_H = 380
 WINDOW_ALPHA = 1.0
 MIN_WINDOW_ALPHA = 0.70
 MAX_WINDOW_ALPHA = 1.0
 TOOLTIP_DELAY_MS = 450
 
-# Short codes for the lang-flow badge on the main page.
-LANG_SHORT = {
-    "auto":  "自",
-    None:    "自",
-    "":      "自",
-    "zh":    "繁",
-    "zh-cn": "簡",
-    "en":    "英",
-    "ja":    "日",
-}
+LANG_NAMES = {"auto": "自動", "zh": "繁中", "zh-cn": "簡中", "en": "英文", "ja": "日文"}
+INPUT_LANGS = ("auto", "zh", "zh-cn", "en", "ja")
+OUTPUT_LANGS = ("zh", "zh-cn", "en", "ja")  # plus "" = same as input
 
 
-def make_button(parent, text, command, *, variant="ghost", font=FONT_BODY_BOLD):
-    """Consistent Tk button with a usable hit target and visible focus border."""
-    palette = {
-        "ghost": (C["surface0"], C["subtext"], C["surface1"], C["text"]),
-        "primary": (C["mauve"], C["crust"], C["lavender"], C["crust"]),
-        "danger": (C["surface0"], C["red"], C["surface1"], C["red"]),
-    }
-    bg, fg, active_bg, active_fg = palette.get(variant, palette["ghost"])
-    return tk.Button(
-        parent, text=text, font=font, bg=bg, fg=fg,
-        activebackground=active_bg, activeforeground=active_fg,
-        bd=0, padx=10, pady=7, cursor="hand2",
-        highlightthickness=1, highlightbackground=C["surface0"],
-        highlightcolor=C["blue"], takefocus=True,
-        command=command,
-    )
+def fit_px(font, text, avail):
+    """Cut text with an ellipsis so it fits `avail` pixels in `font`."""
+    text = text.strip().replace("\n", " ")
+    if font.measure(text) <= avail:
+        return text
+    while text and font.measure(text + "…") > avail:
+        text = text[:-1]
+    return text + "…"
 
 
-def chip(parent, text, *, fg=None, bg=None, font=FONT_SMALL_BOLD):
-    return tk.Label(
-        parent, text=text, font=font,
-        bg=bg or C["surface0"], fg=fg or C["subtext"],
-        padx=8, pady=3,
-    )
+def pill_label(parent, text, *, fill, fg, font=FONT_SMALL_BOLD, bg=None):
+    """Text on an antialiased rounded plate. Returns (label, (w, h))."""
+    bg = bg or C["base"]
+    f = tkfont.Font(font=font)
+    w, h = f.measure(text) + 24, f.metrics("linespace") + 12
+    lbl = tk.Label(parent, text=text, image=draw.rounded_rect(w, h, 8, fill, bg),
+                   compound="center", font=font, fg=fg, bg=bg,
+                   bd=0, padx=0, pady=0, highlightthickness=0)
+    return lbl, (w, h)
 
 
-def menu_chip(parent, text, *, fg=None, bg=None, font=FONT_SMALL_BOLD):
-    return tk.Menubutton(
-        parent, text=text, font=font,
-        bg=bg or C["surface0"], fg=fg or C["subtext"],
-        activebackground=C["surface1"], activeforeground=C["text"],
-        padx=8, pady=3, bd=0, cursor="hand2",
-        highlightthickness=1, highlightbackground=C["surface0"],
-        highlightcolor=C["blue"], takefocus=True,
-    )
+def make_button(parent, text, command, *, variant="ghost", font=FONT_SMALL_BOLD, bg=None):
+    """Rounded button; matches the switches and pills instead of Tk's bevel."""
+    fill, fg, hover = {
+        "ghost": (C["surface0"], C["subtext"], C["surface1"]),
+        "primary": (C["mauve"], C["crust"], C["lavender"]),
+    }[variant]
+    bg = bg or C["base"]
+    btn, (w, h) = pill_label(parent, text, fill=fill, fg=fg, font=font, bg=bg)
+    rest, lit = btn.cget("image"), draw.rounded_rect(w, h, 8, hover, bg)
+    btn.config(cursor="hand2", takefocus=True)
+    btn.bind("<Enter>", lambda _e: btn.config(image=lit))
+    btn.bind("<Leave>", lambda _e: btn.config(image=rest))
+    for seq in ("<Button-1>", "<Return>", "<space>"):
+        btn.bind(seq, lambda _e: btn.after_idle(command))
+    return btn
 
-def blend(a, b, t):
-    """Mix two #rrggbb colors; t=0 gives a, t=1 gives b."""
-    ca = [int(a[i:i + 2], 16) for i in (1, 3, 5)]
-    cb = [int(b[i:i + 2], 16) for i in (1, 3, 5)]
-    return "#%02x%02x%02x" % tuple(round(x + (y - x) * t) for x, y in zip(ca, cb))
 
+class SettingSwitch(tk.Frame):
+    """A setting row: title and a one-line explanation on the left, a pill
+    switch on the right. Clicking anywhere on the row flips it."""
 
-class ToggleSwitch(tk.Frame):
-    """Pill switch with a label, in place of Tk's dated square checkbox."""
-
-    W, H = 34, 18
-
-    def __init__(self, parent, text, variable, command, *, font=FONT_BODY, fg=None):
-        super().__init__(parent, bg=C["base"], cursor="hand2")
-        self.var, self.command = variable, command
-        self.cv = tk.Canvas(self, width=self.W, height=self.H, bg=C["base"], bd=0,
-                            highlightthickness=0, cursor="hand2", takefocus=True)
-        self.cv.pack(side="left")
-        self.lbl = tk.Label(self, text=text, font=font, bg=C["base"],
-                            fg=fg or C["text"], cursor="hand2")
-        self.lbl.pack(side="left", padx=(6, 0))
-        for w in (self, self.cv, self.lbl):
+    def __init__(self, parent, title, desc, variable, command, *, bg=None):
+        bg = bg or C["base"]
+        super().__init__(parent, bg=bg, cursor="hand2")
+        self.var, self.command, self.bg = variable, command, bg
+        self.sw = tk.Label(self, bg=bg, bd=0, highlightthickness=0,
+                           cursor="hand2", takefocus=True)
+        self.sw.pack(side="right")
+        text = tk.Frame(self, bg=bg, cursor="hand2")
+        text.pack(side="left", fill="x", expand=True)
+        parts = [self, self.sw, text,
+                 tk.Label(text, text=title, font=FONT_BODY, bg=bg, fg=C["text"],
+                          anchor="w", cursor="hand2")]
+        parts[-1].pack(fill="x")
+        if desc:
+            parts.append(tk.Label(text, text=desc, font=FONT_SMALL, bg=bg,
+                                  fg=C["overlay0"], anchor="w", cursor="hand2"))
+            parts[-1].pack(fill="x")
+        for w in parts:
             w.bind("<Button-1>", self._flip)
-        self.cv.bind("<space>", self._flip)
+        self.sw.bind("<space>", self._flip)
         # Redraw on any change, including ones made elsewhere (capsule menu).
         self._trace = variable.trace_add("write", lambda *_: self.draw())
         self.bind("<Destroy>", self._untrace)
@@ -239,18 +226,39 @@ class ToggleSwitch(tk.Frame):
         self.command()
 
     def draw(self):
-        if not self.cv.winfo_exists():
-            return
-        on = bool(self.var.get())
-        w, h = self.W, self.H
-        track = C["mauve"] if on else C["surface1"]
-        cv = self.cv
-        cv.delete("all")
-        cv.create_oval(0, 0, h - 1, h - 1, fill=track, outline=track)
-        cv.create_oval(w - h, 0, w - 1, h - 1, fill=track, outline=track)
-        cv.create_rectangle(h / 2, 0, w - h / 2, h - 1, fill=track, outline=track)
-        kx = w - h + 2 if on else 2
-        cv.create_oval(kx, 2, kx + h - 5, h - 3, fill="white", outline="white")
+        if self.sw.winfo_exists():
+            self.sw.config(image=draw.switch(bool(self.var.get()), C["mauve"],
+                                             C["surface1"], "#ffffff", self.bg))
+
+
+class Slider(tk.Canvas):
+    """Rounded track with a round knob; ttk's clam slider is a square block."""
+
+    W, H = 110, 20
+
+    def __init__(self, parent, variable, lo, hi, command, *, bg=None):
+        self.bg = bg or C["base"]
+        super().__init__(parent, width=self.W, height=self.H, bg=self.bg, bd=0,
+                         highlightthickness=0, cursor="hand2")
+        self.var, self.lo, self.hi, self.command = variable, lo, hi, command
+        self._img = self.create_image(0, 0, anchor="nw")
+        self.bind("<Button-1>", self._drag)
+        self.bind("<B1-Motion>", self._drag)
+        self.draw()
+
+    def _drag(self, event):
+        knob = self.H - 4
+        frac = max(0.0, min(1.0, (event.x - knob / 2) / (self.W - knob)))
+        value = round(self.lo + frac * (self.hi - self.lo))
+        if value != self.var.get():
+            self.var.set(value)
+            self.command(value)
+            self.draw()
+
+    def draw(self):
+        frac = (self.var.get() - self.lo) / (self.hi - self.lo)
+        self.itemconfig(self._img, image=draw.slider(
+            self.W, self.H, round(frac, 3), C["mauve"], C["surface1"], "#ffffff", self.bg))
 
 
 # ─── Main Application ────────────────────────────────────────────────────────
@@ -259,11 +267,16 @@ class VoxkeysApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Voxkeys")
-        self.root.geometry(f"{WINDOW_W}x{WINDOW_H}")
+        self.root.geometry(f"{WINDOW_W}x{MAIN_H}")
+        self._win_h = MAIN_H
+        self._win_drag = None
         self.root.resizable(False, False)
         self.root.attributes("-topmost", True)
         self.root.configure(bg=C["base"])
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        # No system title bar: the header is the drag handle, and the window
+        # is clipped to rounded corners. Both need the mapped X window.
+        self.root.bind("<Map>", self._on_root_map, add="+")
 
         try:
             icon = tk.PhotoImage(file=ICON_PATH)
@@ -295,12 +308,7 @@ class VoxkeysApp:
 
         self.missing_deps = voxkeys.check_dependencies()
 
-        # Scaled copies of the app icon; kept on self so Tk does not drop them.
-        try:
-            self._logo_banner = tk.PhotoImage(file=ICON_PATH).subsample(4)  # 32px
-            self._logo_cap = tk.PhotoImage(file=ICON_PATH).subsample(6)     # ~21px
-        except tk.TclError:
-            self._logo_banner = self._logo_cap = None
+        self._body_font = tkfont.Font(root=self.root, font=FONT_BODY)
 
         self._build_main_page()
         self._build_capsule()
@@ -346,116 +354,119 @@ class VoxkeysApp:
 
     # ─── Main Page ───────────────────────────────────────────────────────────
 
+    def _on_root_map(self, event):
+        if event.widget is self.root:
+            draw.undecorate(self.root)
+            draw.round_window(self.root, WINDOW_W, self._win_h, WINDOW_RADIUS)
+
+    def _set_window_height(self, h):
+        self._win_h = h
+        self.root.geometry(f"{WINDOW_W}x{h}")
+        self.root.update_idletasks()
+        draw.round_window(self.root, WINDOW_W, h, WINDOW_RADIUS)
+
+    def _build_header(self, title, *, back=None, actions=()):
+        """Top bar shared by both pages. With no system title bar, it is
+        also what the window is dragged by."""
+        hdr = tk.Canvas(self.root, width=WINDOW_W, height=HEADER_H, bd=0,
+                        highlightthickness=0, bg=C["base"])
+        hdr.pack(fill="x")
+        mid = HEADER_H // 2
+        if back:
+            self._header_icon(hdr, "back", 28, mid, back)
+            x = 46
+        else:
+            hdr.create_image(16, mid, anchor="w", image=draw.logo(ICON_PATH, 28, C["base"]))
+            x = 54
+        hdr.create_text(x, mid, text=title, anchor="w", fill=C["text"], font=FONT_TITLE)
+        for i, (name, cmd) in enumerate(actions):
+            self._header_icon(hdr, name, WINDOW_W - 27 - i * 34, mid, cmd)
+        hdr.bind("<ButtonPress-1>", self._win_press)
+        hdr.bind("<B1-Motion>", self._win_motion)
+        return hdr
+
+    def _header_icon(self, hdr, name, x, y, cmd):
+        rest = draw.action_icon(name, C["subtext"], C["base"])
+        lit = draw.action_icon(name, C["text"], C["base"], plate=C["surface0"])
+        item = hdr.create_image(x, y, image=rest, tags=("icon",))
+        hdr.tag_bind(item, "<Enter>", lambda _e: (hdr.itemconfig(item, image=lit),
+                                                  hdr.config(cursor="hand2")))
+        hdr.tag_bind(item, "<Leave>", lambda _e: (hdr.itemconfig(item, image=rest),
+                                                  hdr.config(cursor="")))
+        # after_idle: the command rebuilds the page, which destroys this canvas.
+        hdr.tag_bind(item, "<Button-1>", lambda _e: self.root.after_idle(cmd))
+
+    def _win_press(self, event):
+        if "icon" in event.widget.gettags("current"):
+            self._win_drag = None
+            return
+        self._win_drag = (event.x_root - self.root.winfo_rootx(),
+                          event.y_root - self.root.winfo_rooty())
+
+    def _win_motion(self, event):
+        if self._win_drag:
+            dx, dy = self._win_drag
+            self.root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
+
     def _build_main_page(self):
         self._clear()
-
-        # Brand banner: the logo's gradient, carrying the title and actions.
-        bh = 58
-        banner = tk.Canvas(self.root, width=WINDOW_W, height=bh, bd=0,
-                           highlightthickness=0, bg=C["brand_a"])
-        banner.pack(fill="x")
-        for x in range(0, WINDOW_W, 2):
-            banner.create_line(x, 0, x, bh, width=2,
-                               fill=blend(C["brand_a"], C["brand_b"], x / WINDOW_W))
-        title_x = 18
-        if self._logo_banner:
-            banner.create_image(16, bh // 2, image=self._logo_banner, anchor="w")
-            title_x = 58
-        banner.create_text(title_x, bh // 2, text="Voxkeys", anchor="w",
-                           fill="white", font=FONT_TITLE)
-        actions = (("—", self._collapse_panel), ("⚙", self._build_settings_page))
-        for i, (glyph, cmd) in enumerate(actions):
-            x = WINDOW_W - 26 - i * 38
-            rest = blend(C["brand_a"], C["brand_b"], x / WINDOW_W)
-            hover = blend(rest, "#ffffff", 0.22)
-            tag = f"act{i}"
-            banner.create_oval(x - 16, bh // 2 - 16, x + 16, bh // 2 + 16,
-                               fill=rest, outline="", tags=(tag, tag + "bg"))
-            banner.create_text(x, bh // 2, text=glyph, fill="white",
-                               font=(FONT_FAMILY, 13), tags=tag)
-            banner.tag_bind(tag, "<Button-1>", lambda _e, c=cmd: c())
-            banner.tag_bind(tag, "<Enter>", lambda _e, t=tag, c=hover: (
-                banner.itemconfig(t + "bg", fill=c), banner.config(cursor="hand2")))
-            banner.tag_bind(tag, "<Leave>", lambda _e, t=tag, c=rest: (
-                banner.itemconfig(t + "bg", fill=c), banner.config(cursor="")))
+        self._set_window_height(MAIN_H)
+        self._build_header("Voxkeys", actions=(("collapse", self._collapse_panel),
+                                               ("settings", self._build_settings_page)))
 
         # Missing-deps banner takes over the body area entirely
         if self.missing_deps:
             body = tk.Frame(self.root, bg=C["base"])
             body.pack(expand=True, fill="both", padx=16)
-            tk.Label(body, text="Setup needed",
-                     font=(FONT_FAMILY, 12, "bold"),
+            tk.Label(body, text="需要先安裝套件", font=FONT_TITLE,
                      bg=C["base"], fg=C["red"]).pack(pady=(18, 4))
-            tk.Label(body, text=f"Missing: {', '.join(self.missing_deps)}",
-                     font=FONT_SMALL,
+            tk.Label(body, text=f"缺少：{', '.join(self.missing_deps)}",
+                     font=FONT_SMALL, wraplength=WINDOW_W - 32,
                      bg=C["base"], fg=C["subtext"]).pack(pady=(0, 8))
             install_cmd = f"sudo apt install {' '.join(self.missing_deps)}"
-            tk.Label(body, text=install_cmd,
-                     font=FONT_MONO, bg=C["surface0"], fg=C["subtext"],
-                     padx=8, pady=6).pack(pady=(0, 8))
-            make_button(body, "Copy command",
-                        lambda: self._copy_plain(install_cmd),
+            tk.Label(body, text=install_cmd, font=FONT_MONO, wraplength=WINDOW_W - 48,
+                     bg=C["surface0"], fg=C["subtext"], padx=8, pady=6).pack(pady=(0, 8))
+            make_button(body, "複製指令", lambda: self._copy_plain(install_cmd),
                         variant="primary").pack()
             return
 
         # Job list area
         self.list_frame = tk.Frame(self.root, bg=C["base"])
-        self.list_frame.pack(fill="both", expand=True, padx=16, pady=(2, 0))
+        self.list_frame.pack(fill="both", expand=True, padx=12)
 
-        # AI toggle (bottom) — single clean row, separator above for hierarchy
-        ai_frame = tk.Frame(self.root, bg=C["base"])
-        ai_frame.pack(fill="x", padx=16, pady=(6, 12))
-
-        toggle_row = tk.Frame(ai_frame, bg=C["base"])
-        toggle_row.pack(fill="x")
+        bottom = tk.Frame(self.root, bg=C["base"])
+        bottom.pack(fill="x", padx=16, pady=(0, 14))
+        tk.Frame(bottom, bg=C["surface0"], height=1).pack(fill="x", pady=(0, 12))
 
         self.ai_var = tk.BooleanVar(value=self.use_ai)
-        self.ai_check = ToggleSwitch(toggle_row, "AI Polish", self.ai_var, self._toggle_ai)
-        self.ai_check.pack(side="left")
-
-        self.per_app_main_var = tk.BooleanVar(
-            value=bool(self.cfg.get("per_app_prompts", False))
-        )
-        self.per_app_main_check = ToggleSwitch(
-            toggle_row, "App Tone", self.per_app_main_var,
-            self._toggle_per_app_prompts, font=FONT_SMALL,
-        )
-        self.per_app_main_check.pack(side="left", padx=(12, 0))
-        self._sync_app_tone_state()
-
-        # Language flow controls: input menu -> output menu.
-        lang_frame = tk.Frame(toggle_row, bg=C["base"])
-        lang_frame.pack(side="right")
-        self.output_lang_chip = menu_chip(lang_frame, self._output_lang_text(), fg=C["lavender"])
-        self._build_output_lang_menu()
-        self.output_lang_chip.pack(side="right")
-        tk.Label(lang_frame, text="→", font=FONT_SMALL_BOLD,
-                 bg=C["base"], fg=C["overlay0"]).pack(side="right", padx=4)
-        self.input_lang_chip = menu_chip(lang_frame, self._input_lang_text(), fg=C["lavender"])
-        self._build_input_lang_menu()
-        self.input_lang_chip.pack(side="right")
-
-        opacity_row = tk.Frame(ai_frame, bg=C["base"])
-        opacity_row.pack(fill="x", pady=(8, 0))
+        SettingSwitch(bottom, "AI 潤稿", "貼上前修標點與錯字",
+                      self.ai_var, self._toggle_ai).pack(fill="x")
         self.capsule_var = tk.BooleanVar(value=bool(self.cfg.get("capsule_visible", True)))
-        ToggleSwitch(
-            opacity_row, "Capsule", self.capsule_var,
-            lambda: self._set_capsule_visible(self.capsule_var.get()),
-            font=FONT_TINY, fg=C["overlay0"],
-        ).pack(side="left", padx=(0, 10))
-        tk.Label(opacity_row, text="Opacity", font=FONT_TINY,
-                 bg=C["base"], fg=C["overlay0"]).pack(side="left")
-        alpha = self.cfg.get("window_alpha", WINDOW_ALPHA)
-        alpha = max(MIN_WINDOW_ALPHA, min(MAX_WINDOW_ALPHA, float(alpha)))
-        self.main_alpha_var = tk.IntVar(value=int(round(alpha * 100)))
-        self.main_alpha_value = chip(opacity_row, f"{self.main_alpha_var.get()}%",
-                                     fg=C["lavender"], font=FONT_TINY_BOLD)
-        self.main_alpha_value.pack(side="right")
-        ttk.Scale(
-            opacity_row, from_=70, to=100, orient="horizontal",
-            variable=self.main_alpha_var, command=self._on_main_alpha_change,
-            style="Voxkeys.Horizontal.TScale",
-        ).pack(side="left", fill="x", expand=True, padx=(8, 8))
+        SettingSwitch(bottom, "浮動膠囊", "螢幕上常駐的錄音狀態條", self.capsule_var,
+                      lambda: self._set_capsule_visible(self.capsule_var.get()),
+                      ).pack(fill="x", pady=(10, 0))
+
+        lang_row = tk.Frame(bottom, bg=C["base"])
+        lang_row.pack(fill="x", pady=(12, 0))
+        tk.Label(lang_row, text="語言", font=FONT_BODY, bg=C["base"],
+                 fg=C["text"]).pack(side="left")
+        self.lang_pill = tk.Menubutton(
+            lang_row, compound="center", font=FONT_BODY, fg=C["lavender"],
+            activeforeground=C["text"], bg=C["base"], activebackground=C["base"],
+            bd=0, padx=0, pady=0, highlightthickness=0, cursor="hand2",
+            direction="above")
+        self.lang_menu = tk.Menu(
+            self.lang_pill, tearoff=False, postcommand=self._fill_lang_menu,
+            bg=C["surface0"], fg=C["text"], activebackground=C["surface1"],
+            activeforeground=C["text"], disabledforeground=C["overlay0"],
+            selectcolor=C["lavender"], font=FONT_BODY, bd=0, activeborderwidth=0)
+        self.lang_pill.config(menu=self.lang_menu)
+        self.lang_pill.pack(side="right")
+        self.lang_pill.bind("<Enter>", lambda _e: self.lang_pill.config(image=self._lang_imgs[1]))
+        self.lang_pill.bind("<Leave>", lambda _e: self.lang_pill.config(image=self._lang_imgs[0]))
+        self._lang_in_var = tk.StringVar()
+        self._lang_out_var = tk.StringVar()
+        self._refresh_lang_chip()
 
         # The list_frame was just rebuilt — re-create row widgets for any jobs
         # we already have in memory (e.g. after returning from settings).
@@ -470,7 +481,7 @@ class VoxkeysApp:
             for jid in self.job_order:
                 self.rows[jid]["row"].pack_forget()
             for jid in reversed(self.job_order):
-                self.rows[jid]["row"].pack(fill="x", pady=1)
+                self.rows[jid]["row"].pack(fill="x", pady=(0, 6))
         else:
             self._ensure_empty_state()
 
@@ -485,54 +496,39 @@ class VoxkeysApp:
         voxkeys.CONFIG["provider"] = provider
         save_config({"provider": provider})
         self._refresh_lang_chip()
-        self._sync_app_tone_state()
 
     def _toggle_per_app_prompts(self):
-        enabled = bool(self.per_app_main_var.get())
+        enabled = bool(self.per_app_var.get())
         self.cfg["per_app_prompts"] = enabled
         voxkeys.CONFIG["per_app_prompts"] = enabled
         save_config({"per_app_prompts": enabled})
 
-    def _on_main_alpha_change(self, value):
-        pct = int(float(value))
-        if hasattr(self, "main_alpha_value") and self.main_alpha_value.winfo_exists():
-            self.main_alpha_value.config(text=f"{pct}%")
-        self.cfg["window_alpha"] = pct / 100
+    def _on_alpha_change(self, value):
+        self.alpha_value.config(text=f"{value}%")
+        self.cfg["window_alpha"] = value / 100
         self._apply_window_alpha(self.cfg["window_alpha"])
         save_config({"window_alpha": self.cfg["window_alpha"]})
 
-    def _sync_app_tone_state(self):
-        if not hasattr(self, "per_app_main_check"):
+    def _fill_lang_menu(self):
+        """Rebuilt on every open: the output section only applies with AI on."""
+        m = self.lang_menu
+        m.delete(0, "end")
+        self._lang_in_var.set(self.cfg.get("language", "auto"))
+        m.add_command(label="說的語言", state="disabled")
+        for code in INPUT_LANGS:
+            m.add_radiobutton(label=LANG_NAMES[code], value=code, variable=self._lang_in_var,
+                              command=lambda c=code: self._set_input_language(c))
+        if not self.use_ai:
             return
-        if self.use_ai:
-            if not self.per_app_main_check.winfo_manager():
-                self.per_app_main_check.pack(side="left", padx=(12, 0))
-        else:
-            self.per_app_main_check.pack_forget()
-
-    def _build_input_lang_menu(self):
-        menu = tk.Menu(
-            self.input_lang_chip, tearoff=False,
-            bg=C["surface0"], fg=C["text"],
-            activebackground=C["surface1"], activeforeground=C["text"],
-            bd=0,
-        )
-        for code, label in (("auto", "自"), ("zh", "中"), ("zh-cn", "簡"),
-                            ("en", "英"), ("ja", "日")):
-            menu.add_command(label=label, command=lambda c=code: self._set_input_language(c))
-        self.input_lang_chip.config(menu=menu)
-
-    def _build_output_lang_menu(self):
-        menu = tk.Menu(
-            self.output_lang_chip, tearoff=False,
-            bg=C["surface0"], fg=C["text"],
-            activebackground=C["surface1"], activeforeground=C["text"],
-            bd=0,
-        )
-        for code, label in (("", "同輸入"), ("zh", "中"), ("zh-cn", "簡"),
-                            ("en", "英"), ("ja", "日")):
-            menu.add_command(label=label, command=lambda c=code: self._set_output_language(c))
-        self.output_lang_chip.config(menu=menu)
+        out = self.cfg.get("output_language", "") or ""
+        self._lang_out_var.set("" if out == "same" else out)
+        m.add_separator()
+        m.add_command(label="輸出成", state="disabled")
+        m.add_radiobutton(label="跟說的一樣", value="", variable=self._lang_out_var,
+                          command=lambda: self._set_output_language(""))
+        for code in OUTPUT_LANGS:
+            m.add_radiobutton(label=LANG_NAMES[code], value=code, variable=self._lang_out_var,
+                              command=lambda c=code: self._set_output_language(c))
 
     def _set_input_language(self, code):
         self.cfg["language"] = code
@@ -549,19 +545,21 @@ class VoxkeysApp:
         self._refresh_lang_chip()
 
     def _refresh_lang_chip(self):
-        if hasattr(self, "input_lang_chip") and self.input_lang_chip.winfo_exists():
-            self.input_lang_chip.config(text=self._input_lang_text())
-        if hasattr(self, "output_lang_chip") and self.output_lang_chip.winfo_exists():
-            self.output_lang_chip.config(text=self._output_lang_text())
+        pill = getattr(self, "lang_pill", None)
+        if pill is None or not pill.winfo_exists():
+            return
+        text = self._lang_text()
+        w, h = self._body_font.measure(text) + 28, 28
+        self._lang_imgs = (draw.rounded_rect(w, h, 8, C["surface0"], C["base"]),
+                           draw.rounded_rect(w, h, 8, C["surface1"], C["base"]))
+        pill.config(text=text, image=self._lang_imgs[0])
 
-    def _input_lang_text(self):
-        return LANG_SHORT.get(self.cfg.get("language", "auto"), "自")
-
-    def _output_lang_text(self):
-        out_code = self.cfg.get("output_language", "") or ""
-        if not out_code or out_code == "same" or not self.use_ai:
-            return self._input_lang_text()
-        return LANG_SHORT.get(out_code, out_code)
+    def _lang_text(self):
+        src = LANG_NAMES.get(self.cfg.get("language", "auto"), "自動")
+        out = self.cfg.get("output_language", "") or ""
+        if not self.use_ai or out in ("", "same"):
+            return src
+        return f"{src} → {LANG_NAMES.get(out, out)}"
 
     # ─── Job list rendering (in-place updates) ───────────────────────────────
 
@@ -579,15 +577,15 @@ class VoxkeysApp:
         center.grid(row=1, column=0, sticky="n")
 
         action_row = tk.Frame(center, bg=C["base"])
-        action_row.pack(pady=(6, 8))
-        chip(action_row, self._hotkey_text(), fg=C["lavender"]).pack(side="left", padx=(0, 6))
-        tk.Label(action_row, text="Dictate / Edit", font=(FONT_FAMILY, 12, "bold"),
+        action_row.pack(pady=(0, 8))
+        pill_label(action_row, self._hotkey_text(), fill=C["surface0"],
+                   fg=C["lavender"])[0].pack(side="left", padx=(0, 8))
+        tk.Label(action_row, text="開始聽寫", font=FONT_TITLE,
                  bg=C["base"], fg=C["text"]).pack(side="left")
 
-        tk.Label(center,
-                 text="Inserts at cursor. Select text to edit it.",
-                 font=FONT_SMALL,
-                 bg=C["base"], fg=C["subtext"]).pack()
+        tk.Label(center, text="文字會貼到游標處；先選取文字可以改寫",
+                 font=FONT_SMALL, wraplength=WINDOW_W - 40,
+                 bg=C["base"], fg=C["overlay0"]).pack()
 
     def _hotkey_text(self):
         return HOTKEY_LABELS.get(self.cfg.get("record_hotkey", "f9"), "F9")
@@ -597,38 +595,38 @@ class VoxkeysApp:
             self.empty_frame.destroy()
 
     def _create_row(self, jid):
-        """Create the widgets for a job row once. Returns the widgets dict."""
-        row = tk.Frame(self.list_frame, bg=C["base"], padx=10, pady=5)
-        row.pack(fill="x", pady=2)
-
-        dot = tk.Label(row, text="·", font=(FONT_FAMILY, 12, "bold"),
-                       bg=C["base"], fg=C["overlay0"], width=2)
-        dot.pack(side="left")
-
-        lbl = tk.Label(row, text="", font=FONT_BODY,
-                       bg=C["base"], fg=C["subtext"],
-                       anchor="w", justify="left")
-        lbl.pack(side="left", fill="x", expand=True, padx=(2, 0))
-
-        id_lbl = tk.Label(row, text=f"#{jid}", font=FONT_TINY,
-                          bg=C["base"], fg=C["overlay0"])
-        id_lbl.pack(side="right")
-
+        """Create the canvas for a job row once. Returns the widgets dict."""
+        w = WINDOW_W - 24
+        row = tk.Canvas(self.list_frame, width=w, height=ROW_H, bg=C["base"],
+                        bd=0, highlightthickness=0)
+        row.pack(fill="x", pady=(0, 6))
         widgets = {
-            "row": row, "dot": dot, "lbl": lbl, "id_lbl": id_lbl,
+            "row": row, "w": w,
+            "bg": row.create_image(0, 0, anchor="nw"),
+            "dot": row.create_image(20, ROW_H // 2),
+            "lbl": row.create_text(36, ROW_H // 2, anchor="w", font=self._body_font,
+                                   fill=C["subtext"], text=""),
+            "kind": "dash", "color": C["overlay0"], "frame": 0, "hover": False,
             "click_text": None, "label_color": C["subtext"],
             "anim_id": None, "anim_kind": None,
-            "tooltip_after": None, "full_text": "",
+            "tooltip_after": None, "full_text": "", "truncated": False,
         }
-
-        # Hover effect — bound once. Idempotent; safe even if click_text is None.
-        for w in (row, dot, lbl, id_lbl):
-            w.bind("<Enter>", lambda _e, ws=widgets: self._row_enter(ws))
-            w.bind("<Leave>", lambda _e, ws=widgets: self._row_leave(ws))
-            w.bind("<Motion>", lambda e, ws=widgets: self._row_motion(e, ws))
-            w.bind("<Button-1>", lambda _e, ws=widgets: self._row_clicked(ws))
-
+        self._paint_row(widgets)
+        row.bind("<Enter>", lambda _e, ws=widgets: self._row_enter(ws))
+        row.bind("<Leave>", lambda _e, ws=widgets: self._row_leave(ws))
+        row.bind("<Motion>", lambda e, ws=widgets: self._row_motion(e, ws))
+        row.bind("<Button-1>", lambda _e, ws=widgets: self._row_clicked(ws))
         return widgets
+
+    def _paint_row(self, ws):
+        """Card and status icon; both depend on the hover state."""
+        row = ws["row"]
+        if not row.winfo_exists():
+            return
+        card = C["surface1"] if ws["hover"] else C["surface0"]
+        row.itemconfig(ws["bg"], image=draw.rounded_rect(ws["w"], ROW_H, 8, card, C["base"]))
+        row.itemconfig(ws["dot"], image=draw.status_icon(
+            ws["kind"], ws["color"], card, frame=ws["frame"]))
 
     def _update_row(self, jid, job):
         """Update an existing row's visuals to reflect the latest job state."""
@@ -639,48 +637,43 @@ class VoxkeysApp:
             return
 
         phase = job["phase"]
-        icon, color_key, default_label = PHASE_VISUALS.get(
-            phase, ("·", "overlay0", phase))
+        kind, color_key, default_label = PHASE_VISUALS.get(
+            phase, ("dash", "overlay0", phase))
 
         if phase in ("done", "polish_failed"):
             text = job["polished_text"] or job["raw_text"] or "(empty)"
-            label_text = self._truncate(text, PREVIEW_MAX)
             label_color = C["text"]
             click_text = job["polished_text"] or job["raw_text"]
-            full_text = click_text or ""
         elif phase == "error":
-            label_text = f"Error: {job.get('error') or 'unknown'}"
+            text = f"錯誤：{job.get('error') or '未知'}"
             label_color = C["red"]
             click_text = None
-            full_text = ""
         else:
-            label_text = default_label or phase
+            text = default_label or phase
             label_color = C["subtext"]
             click_text = None
-            full_text = ""
+        label_text = fit_px(self._body_font, text, widgets["w"] - 36 - 12)
 
-        widgets["dot"].config(text=icon, fg=C[color_key])
-        widgets["lbl"].config(text=label_text, fg=label_color)
-        widgets["label_color"] = label_color
-        widgets["click_text"] = click_text
-        widgets["full_text"] = full_text
-
-        cursor = "hand2" if click_text else ""
-        for w in (widgets["row"], widgets["dot"], widgets["lbl"], widgets["id_lbl"]):
-            w.config(cursor=cursor)
+        row = widgets["row"]
+        row.itemconfig(widgets["lbl"], text=label_text, fill=label_color)
+        widgets.update(kind=kind, color=C[color_key], frame=0,
+                       label_color=label_color, click_text=click_text,
+                       full_text=click_text or "", truncated=label_text != text)
+        row.config(cursor="hand2" if click_text else "")
+        if not click_text:
+            widgets["hover"] = False
+        self._paint_row(widgets)
 
         # Drive animations based on phase.
         self._stop_animation(widgets)
         if phase == "recording":
-            self._start_pulse(widgets, C["green"])
+            self._start_pulse(widgets)
         elif phase in SPINNING_PHASES:
-            self._start_spin(widgets, C[color_key])
+            self._start_spin(widgets)
 
     def _row_clicked(self, widgets):
-        text = widgets.get("click_text")
-        if not text:
-            return
-        self._copy_to_clipboard(text, widgets["lbl"], widgets["label_color"])
+        if widgets.get("click_text"):
+            self._copy_to_clipboard(widgets)
 
     # ─── Row animations ──────────────────────────────────────────────────────
 
@@ -694,40 +687,26 @@ class VoxkeysApp:
         widgets["anim_id"] = None
         widgets["anim_kind"] = None
 
-    def _start_pulse(self, widgets, base_color):
+    def _start_pulse(self, widgets):
         widgets["anim_kind"] = "pulse"
-        state = {"on": True}
 
         def tick():
-            if widgets.get("anim_kind") != "pulse":
+            if widgets.get("anim_kind") != "pulse" or not widgets["row"].winfo_exists():
                 return
-            dot = widgets["dot"]
-            if not dot.winfo_exists():
-                return
-            try:
-                state["on"] = not state["on"]
-                dot.config(fg=base_color if state["on"] else C["surface1"])
-            except tk.TclError:
-                return
+            widgets["kind"] = "ring" if widgets["kind"] == "dot" else "dot"
+            self._paint_row(widgets)
             widgets["anim_id"] = self.root.after(PULSE_PERIOD_MS, tick)
 
         tick()
 
-    def _start_spin(self, widgets, color):
+    def _start_spin(self, widgets):
         widgets["anim_kind"] = "spin"
-        idx = [0]
 
         def tick():
-            if widgets.get("anim_kind") != "spin":
+            if widgets.get("anim_kind") != "spin" or not widgets["row"].winfo_exists():
                 return
-            dot = widgets["dot"]
-            if not dot.winfo_exists():
-                return
-            try:
-                dot.config(text=SPIN_FRAMES[idx[0] % len(SPIN_FRAMES)], fg=color)
-            except tk.TclError:
-                return
-            idx[0] += 1
+            widgets["frame"] = (widgets["frame"] + 1) % draw.SPIN_STEPS
+            self._paint_row(widgets)
             widgets["anim_id"] = self.root.after(SPIN_PERIOD_MS, tick)
 
         tick()
@@ -737,8 +716,7 @@ class VoxkeysApp:
     def _row_enter(self, widgets):
         self._row_hover(widgets, True)
         # Schedule tooltip if the row has expandable content.
-        full = widgets.get("full_text") or ""
-        if not full or len(full) <= PREVIEW_MAX:
+        if not widgets.get("truncated"):
             return
         self._cancel_tooltip(widgets)
         widgets["tooltip_after"] = self.root.after(
@@ -790,7 +768,7 @@ class VoxkeysApp:
                  font=FONT_SMALL,
                  bg=C["surface1"], fg=C["text"],
                  padx=10, pady=6,
-                 wraplength=300, justify="left").pack()
+                 wraplength=WINDOW_W - 40, justify="left").pack()
 
         self._tooltip = tip
 
@@ -818,37 +796,15 @@ class VoxkeysApp:
         except Exception:
             pass
 
-    @staticmethod
-    def _truncate(text, n):
-        """Truncate to n visual cells (CJK chars count as 2)."""
-        text = text.strip().replace("\n", " ")
-        out = []
-        width = 0
-        for ch in text:
-            w = 2 if ord(ch) > 0x2E7F else 1
-            if width + w > n:
-                return "".join(out) + "…"
-            out.append(ch)
-            width += w
-        return "".join(out)
-
-    @staticmethod
-    def _row_hover(widgets, hovering):
-        if not widgets["row"].winfo_exists():
-            return
+    def _row_hover(self, widgets, hovering):
         # Only highlight rows that are clickable.
-        if not widgets.get("click_text"):
+        if not widgets["row"].winfo_exists() or not widgets.get("click_text"):
             return
-        bg = C["surface0"] if hovering else C["base"]
-        for key in ("row", "dot", "lbl", "id_lbl"):
-            try:
-                widgets[key].config(bg=bg)
-            except tk.TclError:
-                pass
+        widgets["hover"] = hovering
+        self._paint_row(widgets)
 
-    def _copy_to_clipboard(self, text, label_widget, original_color):
-        if not text:
-            return
+    def _copy_to_clipboard(self, widgets):
+        text = widgets["click_text"]
         try:
             p = subprocess.Popen(
                 ["xclip", "-selection", "clipboard"],
@@ -858,12 +814,15 @@ class VoxkeysApp:
         except Exception:
             return
 
-        original_text = label_widget.cget("text")
-        label_widget.config(text="Copied ✓", fg=C["green"])
-        self.root.after(
-            900,
-            lambda: label_widget.config(text=original_text, fg=original_color),
-        )
+        row, item = widgets["row"], widgets["lbl"]
+        original_text = row.itemcget(item, "text")
+        row.itemconfig(item, text="已複製", fill=C["green"])
+
+        def restore():
+            if row.winfo_exists():
+                row.itemconfig(item, text=original_text, fill=widgets["label_color"])
+
+        self.root.after(900, restore)
 
     @staticmethod
     def _copy_plain(text):
@@ -1005,26 +964,20 @@ class VoxkeysApp:
         self._clear()
         self.showing_settings = True
 
-        header = tk.Frame(self.root, bg=C["base"])
-        header.pack(fill="x", padx=16, pady=(14, 0))
-
-        make_button(header, "←", self._back_to_main,
-                    font=(FONT_FAMILY, 13)).pack(side="left")
-
-        tk.Label(header, text="Settings", font=(FONT_FAMILY, 12, "bold"),
-                 bg=C["base"], fg=C["text"]).pack(side="left", padx=(8, 0))
-
-        self.settings_actions = tk.Frame(header, bg=C["base"])
-        self.settings_actions.pack(side="right")
-        make_button(self.settings_actions, "Save", self._save_settings,
-                    variant="primary", font=FONT_TINY_BOLD).pack(side="right")
-        make_button(self.settings_actions, "Cancel", self._cancel_settings_changes,
-                    font=FONT_TINY_BOLD).pack(side="right", padx=(0, 8))
-
-        tk.Frame(self.root, bg=C["mauve"], height=2).pack(fill="x", pady=(10, 8))
+        hdr = self._build_header("設定", back=self._back_to_main)
+        self.settings_actions = tk.Frame(hdr, bg=C["base"])
+        make_button(self.settings_actions, "儲存", self._save_settings,
+                    variant="primary").pack(side="right")
+        make_button(self.settings_actions, "取消",
+                    self._cancel_settings_changes).pack(side="right", padx=(0, 6))
+        self._settings_hdr = hdr
+        self._settings_actions_item = hdr.create_window(
+            WINDOW_W - 12, HEADER_H // 2, anchor="e", window=self.settings_actions,
+            state="hidden")
 
         form = tk.Frame(self.root, bg=C["base"])
         form.pack(fill="both", expand=True, padx=16, pady=(0, 14))
+        self._settings_form = form
 
         self._settings_loading = True
         self._init_settings_vars()
@@ -1082,10 +1035,10 @@ class VoxkeysApp:
             var.trace_add("write", self._mark_settings_dirty)
 
     def _build_all_settings(self, parent):
-        self._section_header(parent, "AI Polish")
+        self._section_header(parent, "AI 潤稿")
 
         provider_cb = self._combo_row(
-            parent, "Provider", self.provider_var,
+            parent, "潤稿服務", self.provider_var,
             list(self.PROVIDER_LABELS.values())
         )
         provider_cb.bind("<<ComboboxSelected>>", self._on_provider_change)
@@ -1096,45 +1049,74 @@ class VoxkeysApp:
         self.polish_model_frame = tk.Frame(parent, bg=C["base"])
         self.polish_model_frame.pack(fill="x")
         self.polish_model_row = self._row(self.polish_model_frame)
-        self._row_label(self.polish_model_row, "Qwen Model")
+        self._row_label(self.polish_model_row, "Qwen 模型")
         self._entry(self.polish_model_row, self.polish_model_var, secret=False)
+        SettingSwitch(parent, "依 App 調整語氣", "依目前的視窗換潤稿口吻",
+                      self.per_app_var, self._toggle_per_app_prompts,
+                      ).pack(fill="x", pady=(0, 10))
 
-        self._section_header(parent, "Speech Recognition")
+        self._section_header(parent, "語音辨識")
 
         stt_cb = self._combo_row(
-            parent, "STT Backend", self.stt_var,
+            parent, "辨識引擎", self.stt_var,
             list(self.STT_PROVIDER_LABELS.values())
         )
         stt_cb.bind("<<ComboboxSelected>>", self._on_stt_change)
 
-        self.local_model_frame = tk.Frame(parent, bg=C["base"])
-        self._combo_row(self.local_model_frame, "Whisper Model", self.model_var,
+        # Packed and unpacked by _sync_stt_fields_visibility; this holder keeps
+        # them above the appearance section.
+        self.stt_fields = tk.Frame(parent, bg=C["base"])
+        self.stt_fields.pack(fill="x")
+        self.local_model_frame = tk.Frame(self.stt_fields, bg=C["base"])
+        self._combo_row(self.local_model_frame, "Whisper 模型", self.model_var,
                         ["tiny", "base", "small", "medium", "large-v3"])
 
         # Record Key is not exposed here — it stays whatever record_hotkey says in
         # ~/.config/voxkeys/config.json. The main page already shows the active key.
 
-        self.groq_key_frame = tk.Frame(parent, bg=C["base"])
+        self.groq_key_frame = tk.Frame(self.stt_fields, bg=C["base"])
         groq_row = self._row(self.groq_key_frame)
-        self._row_label(groq_row, "Groq API Key")
+        self._row_label(groq_row, "Groq API 金鑰")
         self._entry(groq_row, self.groq_var)
-        self.gpustack_frame = tk.Frame(parent, bg=C["base"])
+        self.gpustack_frame = tk.Frame(self.stt_fields, bg=C["base"])
         gpustack_combo = self._combo_row(
             self.gpustack_frame,
-            "GPUStack Model",
+            "GPUStack 模型",
             self.gpustack_model_var,
             list(voxkeys.GPUSTACK_STT_MODELS),
         )
         self.gpustack_stt_row = gpustack_combo.master
         self.gpustack_url_row = self._row(self.gpustack_frame)
-        self._row_label(self.gpustack_url_row, "GPUStack URL")
+        self._row_label(self.gpustack_url_row, "GPUStack 網址")
         self._entry(self.gpustack_url_row, self.gpustack_url_var, secret=False)
         gpustack_key_row = self._row(self.gpustack_frame)
-        self._row_label(gpustack_key_row, "GPUStack Key")
+        self._row_label(gpustack_key_row, "GPUStack 金鑰")
         self._entry(gpustack_key_row, self.gpustack_key_var)
+
+        self._section_header(parent, "外觀", top_pad=4)
+        alpha_row = tk.Frame(parent, bg=C["base"])
+        alpha_row.pack(fill="x")
+        tk.Label(alpha_row, text="不透明度", font=FONT_BODY, bg=C["base"],
+                 fg=C["text"]).pack(side="left")
+        self.alpha_value = tk.Label(alpha_row, text=f"{self.alpha_var.get()}%",
+                                    font=FONT_SMALL, bg=C["base"], fg=C["subtext"],
+                                    width=5, anchor="e")
+        self.alpha_value.pack(side="right")
+        Slider(alpha_row, self.alpha_var, 70, 100,
+               self._on_alpha_change).pack(side="right", padx=(0, 4))
 
         self._sync_stt_fields_visibility()
         self._sync_polish_fields_visibility()
+
+    def _fit_settings_height(self):
+        """Size the window to the form; the provider choices show and hide
+        fields, so a fixed height either clips or leaves a gap."""
+        form = getattr(self, "_settings_form", None)
+        if form is None or not form.winfo_exists():
+            return
+        self.root.update_idletasks()
+        h = HEADER_H + form.winfo_reqheight() + 14
+        self._set_window_height(min(h, self.root.winfo_screenheight() - 80))
 
     def _on_stt_change(self, event=None):
         self._sync_stt_fields_visibility()
@@ -1162,36 +1144,40 @@ class VoxkeysApp:
             self.gpustack_stt_row.pack(fill="x", pady=(0, 7), before=self.gpustack_url_row)
         else:
             self.gpustack_stt_row.pack_forget()
+        self._fit_settings_height()
+
+    # Settings fields stack the label above a full-width control: the panel
+    # is too narrow for label and field side by side.
 
     def _row(self, parent):
         row = tk.Frame(parent, bg=C["base"])
-        row.pack(fill="x", pady=(0, 7))
+        row.pack(fill="x", pady=(0, 8))
         return row
 
     def _row_label(self, row, text):
-        label = tk.Label(row, text=text, font=FONT_TINY_BOLD,
-                         bg=C["base"], fg=C["subtext"], anchor="w", width=13)
-        label.pack(side="left")
+        label = tk.Label(row, text=text, font=FONT_SMALL,
+                         bg=C["base"], fg=C["subtext"], anchor="w")
+        label.pack(fill="x", pady=(0, 3))
         return label
 
     def _combo_row(self, parent, label, variable, values):
         row = self._row(parent)
         self._row_label(row, label)
         combo = ttk.Combobox(row, textvariable=variable, values=values,
-                             state="readonly", width=18)
-        combo.pack(side="right", ipady=1, padx=(0, 8))
+                             state="readonly", width=1)
+        combo.pack(fill="x", ipady=2)
         return combo
 
     def _entry(self, row, variable, *, secret=True):
         entry = tk.Entry(row, textvariable=variable, show="•" if secret else "",
-                         font=FONT_MONO_ENTRY,
+                         font=FONT_MONO_ENTRY, width=1,
                          bg=C["surface0"], fg=C["text"],
                          insertbackground=C["text"],
                          relief="flat", bd=0,
                          highlightthickness=1,
-                         highlightcolor=C["blue"],
+                         highlightcolor=C["mauve"],
                          highlightbackground=C["surface1"])
-        entry.pack(side="right", ipady=2, padx=(0, 8))
+        entry.pack(fill="x", ipady=4)
         return entry
 
     def _section_header(self, parent, text, top_pad=0):
@@ -1211,8 +1197,8 @@ class VoxkeysApp:
 
     def _key_label_text(self):
         p = self._selected_provider()
-        names = {"openai": "OpenAI API Key", "claude": "Anthropic API Key"}
-        return names.get(p, "API Key")
+        names = {"openai": "OpenAI API 金鑰", "claude": "Anthropic API 金鑰"}
+        return names.get(p, "API 金鑰")
 
     def _current_key(self):
         p = self._selected_provider()
@@ -1232,6 +1218,7 @@ class VoxkeysApp:
         else:
             self.polish_key_row.pack(fill="x", pady=(0, 7), before=self.polish_model_frame)
             self.polish_model_row.pack_forget()
+        self._fit_settings_height()
 
     def _settings_values(self):
         return {
@@ -1255,13 +1242,11 @@ class VoxkeysApp:
         self._sync_settings_actions()
 
     def _sync_settings_actions(self):
-        if not hasattr(self, "settings_actions"):
+        hdr = getattr(self, "_settings_hdr", None)
+        if hdr is None or not hdr.winfo_exists():
             return
-        if getattr(self, "_settings_dirty", False):
-            if not self.settings_actions.winfo_manager():
-                self.settings_actions.pack(side="right")
-        else:
-            self.settings_actions.pack_forget()
+        dirty = getattr(self, "_settings_dirty", False)
+        hdr.itemconfigure(self._settings_actions_item, state="normal" if dirty else "hidden")
 
     def _cancel_settings_changes(self):
         self._settings_loading = True
@@ -1361,13 +1346,13 @@ class VoxkeysApp:
 
         body = tk.Frame(self.list_frame, bg=C["base"])
         body.pack(expand=True, fill="both", pady=(12, 0))
-        tk.Label(body, text="Hotkeys unavailable",
-                 font=(FONT_FAMILY, 11, "bold"),
+        tk.Label(body, text="無法監聽快捷鍵",
+                 font=FONT_TITLE,
                  bg=C["base"], fg=C["red"]).pack(pady=(0, 6))
         tk.Label(body, text=message,
-                 font=FONT_SMALL, wraplength=300, justify="center",
+                 font=FONT_SMALL, wraplength=WINDOW_W - 40, justify="center",
                  bg=C["base"], fg=C["subtext"]).pack()
-        make_button(body, "Open settings", self._build_settings_page,
+        make_button(body, "打開設定", self._build_settings_page,
                     variant="primary").pack(pady=(12, 0))
 
     # ─── Floating Capsule ────────────────────────────────────────────────────
@@ -1376,8 +1361,9 @@ class VoxkeysApp:
     CAPSULE_FLASH_MS = 2000
 
     def _build_capsule(self):
-        """Always-on-top status pill. Drag to move, drag the right edge to
-        resize, click to open the panel."""
+        """Always-on-top status pill. Drag to move, drag the right end to
+        resize, click to open the panel. Drawn on one canvas so the outline
+        and icons are antialiased; the window itself is clipped to the pill."""
         cap = tk.Toplevel(self.root)
         cap.wm_overrideredirect(True)
         cap.attributes("-topmost", True)
@@ -1385,66 +1371,50 @@ class VoxkeysApp:
             cap.attributes("-type", "dock")  # keep it out of the taskbar / alt-tab
         except tk.TclError:
             pass
-        cap.configure(bg=C["base"], highlightthickness=2,
-                      highlightbackground=C["mauve"], highlightcolor=C["mauve"])
+        cap.configure(bg=C["base"])
         self.capsule = cap
         self._cap_jobs = {}           # job_id -> phase, busy jobs only
         self._cap_rec_start = None
-        self._cap_flash = None        # (icon, color_key, text) of last finished job
+        self._cap_flash = None        # (icon kind, color_key, text) of last finished job
         self._cap_flash_after = None
         self._cap_tick_after = None
         self._cap_spin_i = 0
         self._cap_drag = None
         self._cap_resize = None
+        self._cap_shaped_w = None     # width the window shape was last cut for
         self._cap_w = max(CAPSULE_MIN_W, int(self.cfg.get("capsule_w") or CAPSULE_DEFAULT_W))
+        self._cap_h = CAPSULE_H
         self._cap_font = tkfont.Font(root=self.root, font=CAPSULE_FONT)
+        self._cap_badge_font = tkfont.Font(root=self.root, font=FONT_TINY_BOLD)
 
-        # Right-edge grip: drag it to make the capsule wider or narrower.
-        grip = tk.Label(cap, text="⇔", font=(FONT_FAMILY, 10, "bold"), bg=C["base"],
-                        fg=C["lavender"], padx=6, cursor="sb_h_double_arrow")
-        grip.pack(side="right", fill="y")
-        grip.bind("<ButtonPress-1>", self._cap_resize_press)
-        grip.bind("<B1-Motion>", self._cap_resize_motion)
-        grip.bind("<ButtonRelease-1>", self._cap_resize_release)
-        # Left handle: the app logo on a brand block; it is also the drag grip.
-        if self._logo_cap:
-            handle = tk.Label(cap, image=self._logo_cap, bg=C["brand_a"],
-                              padx=6, cursor="fleur")
-        else:
-            handle = tk.Label(cap, text="⠿", font=(FONT_FAMILY, 11, "bold"),
-                              bg=C["brand_a"], fg="white", padx=5, cursor="fleur")
-        handle.pack(side="left", fill="y")
-        self._cap_chrome = (grip, handle)
-        inner = tk.Frame(cap, bg=C["base"], padx=10, pady=3, cursor="fleur")
-        inner.pack(side="left", fill="both", expand=True)
-        # Fixed width: spinner frames differ in width and would nudge the text.
-        self._cap_dot = tk.Label(inner, font=(FONT_FAMILY, 11, "bold"), bg=C["base"],
-                                 width=2)
-        self._cap_dot.pack(side="left")
-        self._cap_lbl = tk.Label(inner, font=CAPSULE_FONT, bg=C["base"], fg=C["text"],
-                                 anchor="w")
-        self._cap_lbl.pack(side="left", padx=(6, 0))
-        self._cap_badge = tk.Label(inner, font=(FONT_FAMILY, 9, "bold"), bg=C["mauve"],
-                                   fg=C["crust"], padx=6, pady=0)
-        # Not `cap` itself: a Toplevel's binding also fires for every child,
-        # which made dragging the resize grip move the capsule as well.
-        for w in (handle, inner, self._cap_dot, self._cap_lbl, self._cap_badge):
-            w.bind("<ButtonPress-1>", self._cap_press)
-            w.bind("<B1-Motion>", self._cap_motion)
-            w.bind("<ButtonRelease-1>", self._cap_release)
-            w.bind("<Button-3>", self._cap_menu)
+        cv = tk.Canvas(cap, width=self._cap_w, height=CAPSULE_H, bg=C["base"],
+                       bd=0, highlightthickness=0, cursor="fleur")
+        cv.pack(fill="both", expand=True)
+        self._cap_cv = cv
+        mid = CAPSULE_H // 2
+        self._cap_bg = cv.create_image(0, 0, anchor="nw")
+        cv.create_image(6, mid, anchor="w", image=draw.logo(ICON_PATH, CAPSULE_H - 12, C["base"]))
+        self._cap_dot = cv.create_image(CAPSULE_H + 8, mid)
+        self._cap_lbl = cv.create_text(CAPSULE_H + 20, mid, anchor="w", font=self._cap_font)
+        self._cap_badge_bg = cv.create_image(0, mid, anchor="e", state="hidden")
+        self._cap_badge = cv.create_text(0, mid, font=self._cap_badge_font,
+                                         fill=C["crust"], state="hidden")
+        cv.bind("<ButtonPress-1>", self._cap_press)
+        cv.bind("<B1-Motion>", self._cap_motion)
+        cv.bind("<ButtonRelease-1>", self._cap_release)
+        cv.bind("<Motion>", self._cap_hover)
+        cv.bind("<Button-3>", self._cap_menu)
 
         self._cap_popup = tk.Menu(cap, tearoff=0, bg=C["surface0"], fg=C["text"],
-                                  activebackground=C["surface1"], activeforeground=C["text"])
-        self._cap_popup.add_command(label="Open panel", command=self._open_panel)
-        self._cap_popup.add_command(label="Hide capsule",
+                                  activebackground=C["surface1"], activeforeground=C["text"],
+                                  font=FONT_BODY, bd=0, activeborderwidth=0)
+        self._cap_popup.add_command(label="打開面板", command=self._open_panel)
+        self._cap_popup.add_command(label="隱藏膠囊",
                                     command=lambda: self._set_capsule_visible(False))
         self._cap_popup.add_separator()
-        self._cap_popup.add_command(label="Quit Voxkeys", command=self._on_close)
+        self._cap_popup.add_command(label="結束 Voxkeys", command=self._on_close)
 
         self._cap_render()
-        cap.update_idletasks()
-        self._cap_h = cap.winfo_reqheight()
         x, y = self.cfg.get("capsule_x"), self.cfg.get("capsule_y")
         if x is None or y is None:
             x = (cap.winfo_screenwidth() - self._cap_w) // 2
@@ -1494,13 +1464,14 @@ class VoxkeysApp:
         if "recording" in phases:
             secs = int(time.monotonic() - (self._cap_rec_start or time.monotonic()))
             on = (int(time.monotonic() * 1000) // PULSE_PERIOD_MS) % 2 == 0
-            dot, color, text = ("●" if on else "○"), "green", f"Recording  {secs // 60}:{secs % 60:02d}"
+            kind, color = ("dot" if on else "ring"), "green"
+            text = f"錄音中  {secs // 60}:{secs % 60:02d}"
             if busy:
                 badge = f"+{len(busy)}"
             self._cap_tick_after = self.root.after(250, self._cap_render)
         elif busy:
-            self._cap_spin_i = (self._cap_spin_i + 1) % len(SPIN_FRAMES)
-            dot, color = SPIN_FRAMES[self._cap_spin_i], "yellow"
+            self._cap_spin_i = (self._cap_spin_i + 1) % draw.SPIN_STEPS
+            kind, color = "spin", "yellow"
             # Name the job actually being worked on, not one still waiting.
             active = [p for p in busy if p != "queued"]
             text = PHASE_VISUALS[(active or busy)[0]][2]
@@ -1508,33 +1479,30 @@ class VoxkeysApp:
                 badge = f"+{len(busy) - 1}"
             self._cap_tick_after = self.root.after(SPIN_PERIOD_MS, self._cap_render)
         elif self._cap_flash:
-            dot, color, text = self._cap_flash
+            kind, color, text = self._cap_flash
         else:
-            dot, color, text = "●", "mauve", f"{self._hotkey_text()}  Dictate"
-        border = C[color]
-        self.capsule.configure(highlightbackground=border, highlightcolor=border)
-        self._cap_dot.config(text=dot, fg=C[color])
-        if badge:
-            self._cap_badge.config(text=badge)
-            # Pinned to the right end so it stays put while the text changes.
-            self._cap_badge.pack(side="right", padx=(8, 0))
-        else:
-            self._cap_badge.pack_forget()
-        # Fit the text to the chosen width instead of growing the capsule.
-        # Measure the handles instead of guessing, so font changes stay in sync.
-        chrome = sum(w.winfo_reqwidth() for w in self._cap_chrome)
-        avail = self._cap_w - chrome - 4 - 20 - 6 - self._cap_font.measure("●") - 8
-        if badge:
-            avail -= self._cap_font.measure(badge) + 20
-        self._cap_lbl.config(text=self._fit_px(text, avail),
-                             fg=C["subtext"] if color == "mauve" else C["text"])
+            kind, color, text = "dot", "mauve", f"{self._hotkey_text()}  開始聽寫"
 
-    def _fit_px(self, text, avail):
-        if self._cap_font.measure(text) <= avail:
-            return text
-        while text and self._cap_font.measure(text + "…") > avail:
-            text = text[:-1]
-        return text + "…"
+        cv, w, h = self._cap_cv, self._cap_w, CAPSULE_H
+        cv.itemconfig(self._cap_bg, image=draw.rounded_rect(
+            w, h, h // 2, C["base"], C["crust"], outline=C[color], width=1.5))
+        cv.itemconfig(self._cap_dot, image=draw.status_icon(
+            kind, C[color], C["base"], frame=self._cap_spin_i))
+        right = w - 12
+        if badge:
+            bw = self._cap_badge_font.measure(badge) + 14
+            cv.itemconfig(self._cap_badge_bg, state="normal",
+                          image=draw.rounded_rect(bw, 18, 9, C["mauve"], C["base"]))
+            cv.coords(self._cap_badge_bg, right, h // 2)
+            cv.itemconfig(self._cap_badge, text=badge, state="normal")
+            cv.coords(self._cap_badge, right - bw / 2, h // 2)
+            right -= bw + 8
+        else:
+            cv.itemconfig(self._cap_badge_bg, state="hidden")
+            cv.itemconfig(self._cap_badge, state="hidden")
+        avail = right - (CAPSULE_H + 20)
+        cv.itemconfig(self._cap_lbl, text=fit_px(self._cap_font, text, avail),
+                      fill=C["subtext"] if color == "mauve" else C["text"])
 
     def _cap_clamp(self, x, y):
         """Keep the capsule inside the usable screen area.
@@ -1556,37 +1524,35 @@ class VoxkeysApp:
         return (x, y)
 
     def _cap_place(self):
-        self.capsule.geometry(f"{self._cap_w}x{self._cap_h}+{self._cap_pos[0]}+{self._cap_pos[1]}")
+        w, h = self._cap_w, CAPSULE_H
+        self._cap_cv.config(width=w)
+        self.capsule.geometry(f"{w}x{h}+{self._cap_pos[0]}+{self._cap_pos[1]}")
+        if self._cap_shaped_w != w and self.capsule.winfo_ismapped():
+            draw.round_window(self.capsule, w, h, h // 2)
+            self._cap_shaped_w = w
 
-    # Grip handlers return "break" so the press never reaches the move-drag code.
+    def _cap_on_grip(self, event):
+        return event.x >= self._cap_w - CAPSULE_GRIP
 
-    def _cap_resize_press(self, event):
-        self._cap_resize = (event.x_root, self._cap_w)
-        return "break"
-
-    def _cap_resize_motion(self, event):
-        if not self._cap_resize:
-            return "break"
-        x0, w0 = self._cap_resize
-        right = self.root.winfo_screenwidth() - self._cap_pos[0]
-        self._cap_w = max(CAPSULE_MIN_W, min(right, w0 + event.x_root - x0))
-        self._cap_place()
-        self._cap_render()
-        return "break"
-
-    def _cap_resize_release(self, _event):
-        if self._cap_resize:
-            self._cap_resize = None
-            self.cfg["capsule_w"] = self._cap_w
-            save_config({"capsule_w": self._cap_w})
-        return "break"
+    def _cap_hover(self, event):
+        self._cap_cv.config(cursor="sb_h_double_arrow" if self._cap_on_grip(event) else "fleur")
 
     def _cap_press(self, event):
+        if self._cap_on_grip(event):
+            self._cap_resize = (event.x_root, self._cap_w)
+            return
         # winfo_x/y can lag behind geometry() on an override-redirect window,
         # so start from the position this code last placed it at.
         self._cap_drag = (event.x_root, event.y_root, *self._cap_pos, False)
 
     def _cap_motion(self, event):
+        if self._cap_resize:
+            x0, w0 = self._cap_resize
+            right = self.root.winfo_screenwidth() - self._cap_pos[0]
+            self._cap_w = max(CAPSULE_MIN_W, min(right, w0 + event.x_root - x0))
+            self._cap_place()
+            self._cap_render()
+            return
         if not self._cap_drag:
             return
         x0, y0, wx, wy, moved = self._cap_drag
@@ -1598,6 +1564,11 @@ class VoxkeysApp:
         self._cap_place()
 
     def _cap_release(self, _event):
+        if self._cap_resize:
+            self._cap_resize = None
+            self.cfg["capsule_w"] = self._cap_w
+            save_config({"capsule_w": self._cap_w})
+            return
         drag, self._cap_drag = self._cap_drag, None
         if not drag:
             return
@@ -1657,11 +1628,6 @@ class VoxkeysApp:
             self._open_panel()
 
     # ─── Utilities ───────────────────────────────────────────────────────────
-
-    def _resize(self, w, h):
-        x = self.root.winfo_x()
-        y = self.root.winfo_y()
-        self.root.geometry(f"{w}x{h}+{x}+{y}")
 
     def _clear(self):
         # The capsule is a Toplevel child of root; page switches must not destroy it.
