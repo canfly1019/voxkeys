@@ -139,6 +139,7 @@ PREVIEW_MAX = 30  # visual cells (CJK counts as 2)
 MAX_ROWS = 3
 CAPSULE_DEFAULT_W = 260
 CAPSULE_MIN_W = 120
+CAPSULE_FONT = (FONT_FAMILY, 13)
 WINDOW_W = 340
 WINDOW_H = 370  # fits the GPUStack endpoint/model controls on the settings page
 WINDOW_ALPHA = 0.92
@@ -1338,29 +1339,32 @@ class VoxkeysApp:
         self._cap_drag = None
         self._cap_resize = None
         self._cap_w = max(CAPSULE_MIN_W, int(self.cfg.get("capsule_w") or CAPSULE_DEFAULT_W))
-        self._cap_font = tkfont.Font(root=self.root, font=FONT_SMALL)
+        self._cap_font = tkfont.Font(root=self.root, font=CAPSULE_FONT)
 
         # Right-edge grip: drag it to make the capsule wider or narrower.
-        grip = tk.Label(cap, text="⇔", font=FONT_SMALL_BOLD, bg=C["surface1"],
+        grip = tk.Label(cap, text="⇔", font=(FONT_FAMILY, 12, "bold"), bg=C["surface1"],
                         fg=C["subtext"], padx=4, cursor="sb_h_double_arrow")
         grip.pack(side="right", fill="y")
         grip.bind("<ButtonPress-1>", self._cap_resize_press)
         grip.bind("<B1-Motion>", self._cap_resize_motion)
         grip.bind("<ButtonRelease-1>", self._cap_resize_release)
         # Left handle: a visible cue that the capsule can be dragged around.
-        handle = tk.Label(cap, text="⠿", font=FONT_BODY_BOLD, bg=C["surface0"],
+        handle = tk.Label(cap, text="⠿", font=(FONT_FAMILY, 14, "bold"), bg=C["surface0"],
                           fg=C["subtext"], padx=5, cursor="fleur")
         handle.pack(side="left", fill="y")
+        self._cap_chrome = (grip, handle)
         inner = tk.Frame(cap, bg=C["base"], padx=10, pady=6, cursor="fleur")
         inner.pack(side="left", fill="both", expand=True)
-        self._cap_dot = tk.Label(inner, font=FONT_BODY_BOLD, bg=C["base"])
+        self._cap_dot = tk.Label(inner, font=(FONT_FAMILY, 13, "bold"), bg=C["base"])
         self._cap_dot.pack(side="left")
-        self._cap_lbl = tk.Label(inner, font=FONT_SMALL, bg=C["base"], fg=C["text"],
+        self._cap_lbl = tk.Label(inner, font=CAPSULE_FONT, bg=C["base"], fg=C["text"],
                                  anchor="w")
         self._cap_lbl.pack(side="left", padx=(6, 0))
-        self._cap_badge = tk.Label(inner, font=FONT_TINY_BOLD, bg=C["mauve"],
+        self._cap_badge = tk.Label(inner, font=(FONT_FAMILY, 10, "bold"), bg=C["mauve"],
                                    fg=C["crust"], padx=6)
-        for w in (cap, handle, inner, self._cap_dot, self._cap_lbl, self._cap_badge):
+        # Not `cap` itself: a Toplevel's binding also fires for every child,
+        # which made dragging the resize grip move the capsule as well.
+        for w in (handle, inner, self._cap_dot, self._cap_lbl, self._cap_badge):
             w.bind("<ButtonPress-1>", self._cap_press)
             w.bind("<B1-Motion>", self._cap_motion)
             w.bind("<ButtonRelease-1>", self._cap_release)
@@ -1452,8 +1456,9 @@ class VoxkeysApp:
         else:
             self._cap_badge.pack_forget()
         # Fit the text to the chosen width instead of growing the capsule.
-        # border 4 + move handle ~26 + resize grip ~26 + padding 20 + gap 6
-        avail = self._cap_w - 82 - self._cap_font.measure("●") - 8
+        # Measure the handles instead of guessing, so font changes stay in sync.
+        chrome = sum(w.winfo_reqwidth() for w in self._cap_chrome)
+        avail = self._cap_w - chrome - 4 - 20 - 6 - self._cap_font.measure("●") - 8
         if badge:
             avail -= self._cap_font.measure(badge) + 20
         self._cap_lbl.config(text=self._fit_px(text, avail),
@@ -1488,27 +1493,33 @@ class VoxkeysApp:
     def _cap_place(self):
         self.capsule.geometry(f"{self._cap_w}x{self._cap_h}+{self._cap_pos[0]}+{self._cap_pos[1]}")
 
+    # Grip handlers return "break" so the press never reaches the move-drag code.
+
     def _cap_resize_press(self, event):
         self._cap_resize = (event.x_root, self._cap_w)
+        return "break"
 
     def _cap_resize_motion(self, event):
         if not self._cap_resize:
-            return
+            return "break"
         x0, w0 = self._cap_resize
         right = self.root.winfo_screenwidth() - self._cap_pos[0]
         self._cap_w = max(CAPSULE_MIN_W, min(right, w0 + event.x_root - x0))
         self._cap_place()
         self._cap_render()
+        return "break"
 
     def _cap_resize_release(self, _event):
         if self._cap_resize:
             self._cap_resize = None
             self.cfg["capsule_w"] = self._cap_w
             save_config({"capsule_w": self._cap_w})
+        return "break"
 
     def _cap_press(self, event):
-        self._cap_drag = (event.x_root, event.y_root,
-                          self.capsule.winfo_x(), self.capsule.winfo_y(), False)
+        # winfo_x/y can lag behind geometry() on an override-redirect window,
+        # so start from the position this code last placed it at.
+        self._cap_drag = (event.x_root, event.y_root, *self._cap_pos, False)
 
     def _cap_motion(self, event):
         if not self._cap_drag:
