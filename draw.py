@@ -124,6 +124,9 @@ def action_icon(name, color, bg, plate=None, size=30):
                       fill=_rgb(plate or bg), outline=c, width=w)
     elif name == "collapse":
         d.line((s * 0.32, s / 2, s * 0.68, s / 2), fill=c, width=w)
+    elif name == "close":
+        d.line((s * 0.34, s * 0.34, s * 0.66, s * 0.66), fill=c, width=w)
+        d.line((s * 0.34, s * 0.66, s * 0.66, s * 0.34), fill=c, width=w)
     elif name == "back":
         d.line([(s * 0.56, s * 0.32), (s * 0.4, s / 2), (s * 0.56, s * 0.68)],
                fill=c, width=w, joint="curve")

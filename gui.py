@@ -412,7 +412,8 @@ class VoxkeysApp:
     def _build_main_page(self):
         self._clear()
         self._set_window_height(MAIN_H)
-        self._build_header("Voxkeys", actions=(("collapse", self._collapse_panel),
+        self._build_header("Voxkeys", actions=(("close", self._on_close),
+                                               ("collapse", self._collapse_panel),
                                                ("settings", self._build_settings_page)))
 
         # Missing-deps banner takes over the body area entirely
@@ -431,22 +432,23 @@ class VoxkeysApp:
                         variant="primary").pack()
             return
 
-        # Job list area
+        # Settings are packed first, from the bottom, so they keep their space;
+        # a long job list is clipped (oldest rows, at the bottom) instead of
+        # squeezing them.
+        bottom = tk.Frame(self.root, bg=C["base"])
+        bottom.pack(side="bottom", fill="x", padx=16, pady=(0, 14))
         self.list_frame = tk.Frame(self.root, bg=C["base"])
         self.list_frame.pack(fill="both", expand=True, padx=12)
-
-        bottom = tk.Frame(self.root, bg=C["base"])
-        bottom.pack(fill="x", padx=16, pady=(0, 14))
         tk.Frame(bottom, bg=C["surface0"], height=1).pack(fill="x", pady=(0, 12))
 
         self.ai_var = tk.BooleanVar(value=self.use_ai)
-        SettingSwitch(bottom, "AI 潤稿", "貼上前修標點與錯字",
+        SettingSwitch(bottom, "AI 潤稿", None,
                       self.ai_var, self._toggle_ai).pack(fill="x")
         self.submit_var = tk.BooleanVar(value=bool(self.cfg.get("auto_submit", True)))
-        SettingSwitch(bottom, "貼上後送出", "仍在原視窗時自動按 Enter",
+        SettingSwitch(bottom, "貼上後送出", None,
                       self.submit_var, self._toggle_auto_submit).pack(fill="x", pady=(10, 0))
         self.capsule_var = tk.BooleanVar(value=bool(self.cfg.get("capsule_visible", True)))
-        SettingSwitch(bottom, "浮動膠囊", "螢幕上常駐的錄音狀態條", self.capsule_var,
+        SettingSwitch(bottom, "浮動膠囊", None, self.capsule_var,
                       lambda: self._set_capsule_visible(self.capsule_var.get()),
                       ).pack(fill="x", pady=(10, 0))
 
@@ -520,7 +522,8 @@ class VoxkeysApp:
         save_config({"window_alpha": self.cfg["window_alpha"]})
 
     def _fill_lang_menu(self):
-        """Rebuilt on every open: the output section only applies with AI on."""
+        """Rebuilt on every open. Translating needs AI polish, so with it off
+        the output section is shown disabled with a hint instead of hidden."""
         m = self.lang_menu
         m.delete(0, "end")
         self._lang_in_var.set(self.cfg.get("language", "auto"))
@@ -528,17 +531,17 @@ class VoxkeysApp:
         for code in INPUT_LANGS:
             m.add_radiobutton(label=LANG_NAMES[code], value=code, variable=self._lang_in_var,
                               command=lambda c=code: self._set_input_language(c))
-        if not self.use_ai:
-            return
         out = self.cfg.get("output_language", "") or ""
         self._lang_out_var.set("" if out == "same" else out)
+        state = "normal" if self.use_ai else "disabled"
         m.add_separator()
-        m.add_command(label="輸出成", state="disabled")
+        m.add_command(label="輸出成" if self.use_ai else "輸出成（需開 AI 潤稿）",
+                      state="disabled")
         m.add_radiobutton(label="跟說的一樣", value="", variable=self._lang_out_var,
-                          command=lambda: self._set_output_language(""))
+                          state=state, command=lambda: self._set_output_language(""))
         for code in OUTPUT_LANGS:
             m.add_radiobutton(label=LANG_NAMES[code], value=code, variable=self._lang_out_var,
-                              command=lambda c=code: self._set_output_language(c))
+                              state=state, command=lambda c=code: self._set_output_language(c))
 
     def _set_input_language(self, code):
         self.cfg["language"] = code
@@ -1061,7 +1064,7 @@ class VoxkeysApp:
         self.polish_model_row = self._row(self.polish_model_frame)
         self._row_label(self.polish_model_row, "Qwen 模型")
         self._entry(self.polish_model_row, self.polish_model_var, secret=False)
-        SettingSwitch(parent, "依 App 調整語氣", "依目前的視窗換潤稿口吻",
+        SettingSwitch(parent, "依 App 調整語氣", None,
                       self.per_app_var, self._toggle_per_app_prompts,
                       ).pack(fill="x", pady=(0, 10))
 
