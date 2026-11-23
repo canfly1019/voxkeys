@@ -139,7 +139,7 @@ PREVIEW_MAX = 30  # visual cells (CJK counts as 2)
 MAX_ROWS = 3
 CAPSULE_DEFAULT_W = 260
 CAPSULE_MIN_W = 120
-CAPSULE_FONT = (FONT_FAMILY, 13)
+CAPSULE_FONT = (FONT_FAMILY, 11)
 WINDOW_W = 340
 WINDOW_H = 370  # fits the GPUStack endpoint/model controls on the settings page
 WINDOW_ALPHA = 0.92
@@ -1342,26 +1342,28 @@ class VoxkeysApp:
         self._cap_font = tkfont.Font(root=self.root, font=CAPSULE_FONT)
 
         # Right-edge grip: drag it to make the capsule wider or narrower.
-        grip = tk.Label(cap, text="⇔", font=(FONT_FAMILY, 12, "bold"), bg=C["surface1"],
+        grip = tk.Label(cap, text="⇔", font=(FONT_FAMILY, 10, "bold"), bg=C["surface1"],
                         fg=C["subtext"], padx=4, cursor="sb_h_double_arrow")
         grip.pack(side="right", fill="y")
         grip.bind("<ButtonPress-1>", self._cap_resize_press)
         grip.bind("<B1-Motion>", self._cap_resize_motion)
         grip.bind("<ButtonRelease-1>", self._cap_resize_release)
         # Left handle: a visible cue that the capsule can be dragged around.
-        handle = tk.Label(cap, text="⠿", font=(FONT_FAMILY, 14, "bold"), bg=C["surface0"],
+        handle = tk.Label(cap, text="⠿", font=(FONT_FAMILY, 11, "bold"), bg=C["surface0"],
                           fg=C["subtext"], padx=5, cursor="fleur")
         handle.pack(side="left", fill="y")
         self._cap_chrome = (grip, handle)
-        inner = tk.Frame(cap, bg=C["base"], padx=10, pady=6, cursor="fleur")
+        inner = tk.Frame(cap, bg=C["base"], padx=10, pady=3, cursor="fleur")
         inner.pack(side="left", fill="both", expand=True)
-        self._cap_dot = tk.Label(inner, font=(FONT_FAMILY, 13, "bold"), bg=C["base"])
+        # Fixed width: spinner frames differ in width and would nudge the text.
+        self._cap_dot = tk.Label(inner, font=(FONT_FAMILY, 11, "bold"), bg=C["base"],
+                                 width=2)
         self._cap_dot.pack(side="left")
         self._cap_lbl = tk.Label(inner, font=CAPSULE_FONT, bg=C["base"], fg=C["text"],
                                  anchor="w")
         self._cap_lbl.pack(side="left", padx=(6, 0))
-        self._cap_badge = tk.Label(inner, font=(FONT_FAMILY, 10, "bold"), bg=C["mauve"],
-                                   fg=C["crust"], padx=6)
+        self._cap_badge = tk.Label(inner, font=(FONT_FAMILY, 9, "bold"), bg=C["mauve"],
+                                   fg=C["crust"], padx=6, pady=0)
         # Not `cap` itself: a Toplevel's binding also fires for every child,
         # which made dragging the resize grip move the capsule as well.
         for w in (handle, inner, self._cap_dot, self._cap_lbl, self._cap_badge):
@@ -1452,7 +1454,8 @@ class VoxkeysApp:
         self._cap_dot.config(text=dot, fg=C[color])
         if badge:
             self._cap_badge.config(text=badge)
-            self._cap_badge.pack(side="left", padx=(8, 0))
+            # Pinned to the right end so it stays put while the text changes.
+            self._cap_badge.pack(side="right", padx=(8, 0))
         else:
             self._cap_badge.pack_forget()
         # Fit the text to the chosen width instead of growing the capsule.
