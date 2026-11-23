@@ -394,7 +394,14 @@ class VoxkeysApp:
 
     def _toggle_ai(self):
         self.use_ai = self.ai_var.get()
-        voxkeys.CONFIG["provider"] = self.cfg["provider"] if self.use_ai else "none"
+        if self.use_ai:
+            # Turning polish on from the "none" default picks the GPUStack backend.
+            provider = self.cfg["provider"] if self.cfg["provider"] != "none" else "gpustack"
+        else:
+            provider = "none"
+        self.cfg["provider"] = provider
+        voxkeys.CONFIG["provider"] = provider
+        save_config({"provider": provider})
         self._refresh_lang_chip()
         self._sync_app_tone_state()
 
@@ -1203,9 +1210,11 @@ class VoxkeysApp:
         self._sync_settings_actions()
 
     def _save_settings(self):
-        provider = self._selected_provider()
+        # The provider dropdown only lists polish backends; keep "none" while
+        # the AI Polish toggle is off so saving other settings cannot re-enable it.
+        provider = self._selected_provider() if self.use_ai else "none"
         key_field = {"openai": "openai_api_key",
-                     "claude": "anthropic_api_key"}.get(provider)
+                     "claude": "anthropic_api_key"}.get(self._selected_provider())
         stt = self.STT_PROVIDER_FROM_LABEL.get(self.stt_var.get(), "local")
 
         updates = {

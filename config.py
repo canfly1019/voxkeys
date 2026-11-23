@@ -11,7 +11,9 @@ CONFIG_DIR = os.path.expanduser("~/.config/voxkeys")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 
 DEFAULT_CONFIG = {
-    "provider": "gpustack",
+    # Polishing is opt-in: the STT model already returns punctuated text, and a
+    # slow shared LLM otherwise delays every paste.
+    "provider": "none",
     "openai_api_key": "",
     "anthropic_api_key": "",
     "whisper_model": "small",

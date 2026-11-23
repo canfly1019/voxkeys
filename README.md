@@ -1,13 +1,13 @@
 # Voxkeys
 
-Linux voice dictation tool. Hold a hotkey to speak, auto-transcribe, AI polish, paste to cursor.
+Linux voice dictation tool. Hold a hotkey to speak, auto-transcribe, paste to cursor. AI polish is optional and off by default.
 
 ## Features
 
 - **Hold to speak**: Hold F9 to record, release to process
 - **Edit selected text**: If text is selected, the record key uses your speech as an edit instruction
 - **Flexible transcription**: Local faster-whisper, Groq, or GPUStack ASR
-- **AI text polish**: Auto-fix typos, add punctuation, remove filler words
+- **Optional AI text polish** (off by default): Auto-fix typos, add punctuation, remove filler words. Turn it on with the **AI Polish** toggle or `"provider"` in the config
 - **Multi-provider support**: GPUStack (Qwen) / OpenAI / Claude
 - **Auto-paste**: Result pasted into the window you were in when you pressed the hotkey (focus is restored if it drifted during processing); previous clipboard contents are restored after paste
 - **GUI mode**: Tkinter floating window with real-time status
@@ -84,7 +84,7 @@ Can be modified via the GUI settings page, or edited manually:
 
 ```json
 {
-  "provider": "gpustack",
+  "provider": "none",
   "gpustack_polish_model": "qwen3.8-27b-fp8",
   "whisper_model": "small",
   "record_hotkey": "f9",
@@ -99,7 +99,8 @@ speech recognition and `/chat/completions` for polishing. The shared
 `GPUSTACK_BASE_URL` includes the API prefix (typically `/v1`); `GPUSTACK_API_KEY`
 authenticates both. Speech recognition and polishing can be selected independently.
 
-Choose **GPUStack (Qwen)** under AI Polish. The Qwen model comes from
+Polishing is off by default (`"provider": "none"`). To use it, turn on **AI Polish**
+(this selects GPUStack) or choose **GPUStack (Qwen)** under AI Polish. The Qwen model comes from
 `gpustack_polish_model`, then `GPUSTACK_MODEL`, with `qwen3.8-27b-fp8` as the default.
 Polishing disables Qwen thinking mode and keeps the existing timeout and retry
 limit. The speech model remains independently configured as `breeze-asr-25`.
