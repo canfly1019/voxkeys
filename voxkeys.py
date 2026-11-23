@@ -656,9 +656,11 @@ def _transcribe_with_openai_compatible(
 # wedges every later dictation at "queued". Both SDKs default to 600s with
 # retries, which is effectively forever for a dictation tool: fail fast instead
 # and let _polish_job fall back to pasting the raw transcript.
-# Worst case wait is POLISH_TIMEOUT * (POLISH_RETRIES + 1) = 30s. Normal polish
-# latency is 1-2s, so 15s is already 10x slack; the retry covers transient 5xx.
-POLISH_TIMEOUT = 15.0
+# Worst case wait is POLISH_TIMEOUT * (POLISH_RETRIES + 1) = 90s. Polish is
+# usually 1-4s, but the shared GPUStack server queues requests when other
+# clients load it: measured 17-35s replies and many >40s, so a 30s cap pasted
+# the raw transcript far too often. The retry also covers transient 5xx.
+POLISH_TIMEOUT = 45.0
 POLISH_RETRIES = 1
 
 
