@@ -1341,12 +1341,17 @@ class VoxkeysApp:
         self._cap_font = tkfont.Font(root=self.root, font=FONT_SMALL)
 
         # Right-edge grip: drag it to make the capsule wider or narrower.
-        grip = tk.Frame(cap, bg=C["surface1"], width=6, cursor="sb_h_double_arrow")
+        grip = tk.Label(cap, text="⇔", font=FONT_SMALL_BOLD, bg=C["surface1"],
+                        fg=C["subtext"], padx=4, cursor="sb_h_double_arrow")
         grip.pack(side="right", fill="y")
         grip.bind("<ButtonPress-1>", self._cap_resize_press)
         grip.bind("<B1-Motion>", self._cap_resize_motion)
         grip.bind("<ButtonRelease-1>", self._cap_resize_release)
-        inner = tk.Frame(cap, bg=C["base"], padx=12, pady=6)
+        # Left handle: a visible cue that the capsule can be dragged around.
+        handle = tk.Label(cap, text="⠿", font=FONT_BODY_BOLD, bg=C["surface0"],
+                          fg=C["subtext"], padx=5, cursor="fleur")
+        handle.pack(side="left", fill="y")
+        inner = tk.Frame(cap, bg=C["base"], padx=10, pady=6, cursor="fleur")
         inner.pack(side="left", fill="both", expand=True)
         self._cap_dot = tk.Label(inner, font=FONT_BODY_BOLD, bg=C["base"])
         self._cap_dot.pack(side="left")
@@ -1355,7 +1360,7 @@ class VoxkeysApp:
         self._cap_lbl.pack(side="left", padx=(6, 0))
         self._cap_badge = tk.Label(inner, font=FONT_TINY_BOLD, bg=C["mauve"],
                                    fg=C["crust"], padx=6)
-        for w in (cap, inner, self._cap_dot, self._cap_lbl, self._cap_badge):
+        for w in (cap, handle, inner, self._cap_dot, self._cap_lbl, self._cap_badge):
             w.bind("<ButtonPress-1>", self._cap_press)
             w.bind("<B1-Motion>", self._cap_motion)
             w.bind("<ButtonRelease-1>", self._cap_release)
@@ -1447,7 +1452,8 @@ class VoxkeysApp:
         else:
             self._cap_badge.pack_forget()
         # Fit the text to the chosen width instead of growing the capsule.
-        avail = self._cap_w - 6 - 24 - 6 - self._cap_font.measure("●") - 8
+        # border 4 + move handle ~26 + resize grip ~26 + padding 20 + gap 6
+        avail = self._cap_w - 82 - self._cap_font.measure("●") - 8
         if badge:
             avail -= self._cap_font.measure(badge) + 20
         self._cap_lbl.config(text=self._fit_px(text, avail),
