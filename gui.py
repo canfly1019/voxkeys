@@ -441,16 +441,16 @@ class VoxkeysApp:
         self.list_frame.pack(fill="both", expand=True, padx=12)
         tk.Frame(bottom, bg=C["surface0"], height=1).pack(fill="x", pady=(0, 12))
 
-        self.ai_var = tk.BooleanVar(value=self.use_ai)
-        SettingSwitch(bottom, "AI 潤稿", None,
-                      self.ai_var, self._toggle_ai).pack(fill="x")
         self.submit_var = tk.BooleanVar(value=bool(self.cfg.get("auto_submit", True)))
         SettingSwitch(bottom, "貼上後送出", None,
-                      self.submit_var, self._toggle_auto_submit).pack(fill="x", pady=(10, 0))
+                      self.submit_var, self._toggle_auto_submit).pack(fill="x")
         self.capsule_var = tk.BooleanVar(value=bool(self.cfg.get("capsule_visible", True)))
         SettingSwitch(bottom, "浮動膠囊", None, self.capsule_var,
                       lambda: self._set_capsule_visible(self.capsule_var.get()),
                       ).pack(fill="x", pady=(10, 0))
+        self.ai_var = tk.BooleanVar(value=self.use_ai)
+        SettingSwitch(bottom, "AI 潤稿", None,
+                      self.ai_var, self._toggle_ai).pack(fill="x", pady=(10, 0))
 
         lang_row = tk.Frame(bottom, bg=C["base"])
         lang_row.pack(fill="x", pady=(12, 0))
