@@ -162,15 +162,23 @@ def _wrapper(widget):
     return d, win.query_tree().parent
 
 
-def round_window(widget, w, h, r):
-    """Clip a toplevel to a rounded rectangle via the X SHAPE extension.
+def round_window(widget, w, h, r, *, own=False):
+    """Clip a window to a rounded rectangle via the X SHAPE extension.
+
+    By default the toplevel's wrapper is shaped; `own` shapes the widget's
+    own X window instead (used for the inner frame that leaves a 1px ring of
+    the toplevel's background as a border).
 
     The mask is 1-bit, so the corner edge is not antialiased; on a dark
     window that is hardly visible at this radius.
     """
     try:
         from Xlib.ext import shape
-        d, win = _wrapper(widget)
+        if own:
+            d = _display()
+            win = d.create_resource_object("window", widget.winfo_id())
+        else:
+            d, win = _wrapper(widget)
         pm = win.create_pixmap(w, h, 1)
         gc = pm.create_gc(foreground=0, background=0)
         pm.fill_rectangle(gc, 0, 0, w, h)

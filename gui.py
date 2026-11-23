@@ -136,7 +136,7 @@ CAPSULE_FONT = FONT_BODY
 WINDOW_W = 260
 WINDOW_RADIUS = 14
 HEADER_H = 56
-MAIN_H = 380
+MAIN_H = 376  # header + MAX_ROWS rows + settings, without slack between them
 WINDOW_ALPHA = 1.0
 MIN_WINDOW_ALPHA = 0.70
 MAX_WINDOW_ALPHA = 1.0
@@ -272,7 +272,12 @@ class VoxkeysApp:
         self._win_drag = None
         self.root.resizable(False, False)
         self.root.attributes("-topmost", True)
-        self.root.configure(bg=C["base"])
+        # The toplevel background shows as a 1px border ring around the
+        # rounded inner shell that holds every page, so the borderless panel
+        # stands out against windows behind it.
+        self.root.configure(bg=C["mauve"])
+        self.shell = tk.Frame(self.root, bg=C["base"])
+        self.shell.pack(fill="both", expand=True, padx=1, pady=1)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         # No system title bar: the header is the drag handle, and the window
         # is clipped to rounded corners. Both need the mapped X window.
@@ -356,20 +361,28 @@ class VoxkeysApp:
     # ─── Main Page ───────────────────────────────────────────────────────────
 
     def _on_root_map(self, event):
+        # <Map> on root also fires for its children, including the shell.
         if event.widget is self.root:
             draw.undecorate(self.root)
-            draw.round_window(self.root, WINDOW_W, self._win_h, WINDOW_RADIUS)
+        if event.widget in (self.root, self.shell):
+            self._shape_window(self._win_h)
 
     def _set_window_height(self, h):
         self._win_h = h
         self.root.geometry(f"{WINDOW_W}x{h}")
         self.root.update_idletasks()
+        self._shape_window(h)
+
+    def _shape_window(self, h):
         draw.round_window(self.root, WINDOW_W, h, WINDOW_RADIUS)
+        # The shell's X window exists only once it is mapped.
+        if self.shell.winfo_ismapped():
+            draw.round_window(self.shell, WINDOW_W - 2, h - 2, WINDOW_RADIUS - 1, own=True)
 
     def _build_header(self, title, *, back=None, actions=()):
         """Top bar shared by both pages. With no system title bar, it is
         also what the window is dragged by."""
-        hdr = tk.Canvas(self.root, width=WINDOW_W, height=HEADER_H, bd=0,
+        hdr = tk.Canvas(self.shell, width=WINDOW_W - 2, height=HEADER_H, bd=0,
                         highlightthickness=0, bg=C["base"])
         hdr.pack(fill="x")
         mid = HEADER_H // 2
@@ -418,7 +431,7 @@ class VoxkeysApp:
 
         # Missing-deps banner takes over the body area entirely
         if self.missing_deps:
-            body = tk.Frame(self.root, bg=C["base"])
+            body = tk.Frame(self.shell, bg=C["base"])
             body.pack(expand=True, fill="both", padx=16)
             tk.Label(body, text="需要先安裝套件", font=FONT_TITLE,
                      bg=C["base"], fg=C["red"]).pack(pady=(18, 4))
@@ -435,9 +448,9 @@ class VoxkeysApp:
         # Settings are packed first, from the bottom, so they keep their space;
         # a long job list is clipped (oldest rows, at the bottom) instead of
         # squeezing them.
-        bottom = tk.Frame(self.root, bg=C["base"])
+        bottom = tk.Frame(self.shell, bg=C["base"])
         bottom.pack(side="bottom", fill="x", padx=16, pady=(0, 14))
-        self.list_frame = tk.Frame(self.root, bg=C["base"])
+        self.list_frame = tk.Frame(self.shell, bg=C["base"])
         self.list_frame.pack(fill="both", expand=True, padx=12)
         tk.Frame(bottom, bg=C["surface0"], height=1).pack(fill="x", pady=(0, 12))
 
@@ -473,6 +486,20 @@ class VoxkeysApp:
         self._lang_in_var = tk.StringVar()
         self._lang_out_var = tk.StringVar()
         self._refresh_lang_chip()
+
+        alpha = self.cfg.get("window_alpha", WINDOW_ALPHA)
+        alpha = max(MIN_WINDOW_ALPHA, min(MAX_WINDOW_ALPHA, float(alpha)))
+        self.alpha_var = tk.IntVar(value=int(round(alpha * 100)))
+        alpha_row = tk.Frame(bottom, bg=C["base"])
+        alpha_row.pack(fill="x", pady=(10, 0))
+        tk.Label(alpha_row, text="不透明度", font=FONT_BODY, bg=C["base"],
+                 fg=C["text"]).pack(side="left")
+        self.alpha_value = tk.Label(alpha_row, text=f"{self.alpha_var.get()}%",
+                                    font=FONT_SMALL, bg=C["base"], fg=C["subtext"],
+                                    width=5, anchor="e")
+        self.alpha_value.pack(side="right")
+        Slider(alpha_row, self.alpha_var, 70, 100,
+               self._on_alpha_change).pack(side="right", padx=(0, 4))
 
         # The list_frame was just rebuilt — re-create row widgets for any jobs
         # we already have in memory (e.g. after returning from settings).
@@ -988,9 +1015,20 @@ class VoxkeysApp:
             WINDOW_W - 12, HEADER_H // 2, anchor="e", window=self.settings_actions,
             state="hidden")
 
-        form = tk.Frame(self.root, bg=C["base"])
-        form.pack(fill="both", expand=True, padx=16, pady=(0, 14))
+        # Fixed height, same as the main page, so opening settings never
+        # resizes the window; the form scrolls inside a canvas instead.
+        self._set_window_height(MAIN_H)
+        sc = tk.Canvas(self.shell, bg=C["base"], bd=0, highlightthickness=0)
+        sc.pack(fill="both", expand=True, pady=(0, 14))
+        form = tk.Frame(sc, bg=C["base"])
+        sc.create_window(16, 0, anchor="nw", window=form, width=WINDOW_W - 32)
+        form.bind("<Configure>", lambda _e: sc.configure(scrollregion=sc.bbox("all")))
+        self._settings_canvas = sc
         self._settings_form = form
+        for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+            self.root.bind_all(seq, self._settings_wheel)
+            # A readonly combobox would otherwise change its value on wheel.
+            self.root.bind_class("TCombobox", seq, self._settings_wheel)
 
         self._settings_loading = True
         self._init_settings_vars()
@@ -999,6 +1037,7 @@ class VoxkeysApp:
         self._settings_dirty = False
         self._settings_loading = False
         self._sync_settings_actions()
+        sc.yview_moveto(0)
 
     def _init_settings_vars(self):
         provider = self.cfg["provider"] if self.cfg["provider"] in self.PROVIDER_LABELS else "gpustack"
@@ -1029,9 +1068,6 @@ class VoxkeysApp:
         out_lang_display = self.OUTPUT_LANG_LABELS.get(out_lang_key, "Same as input")
         self.output_lang_var = tk.StringVar(value=out_lang_display)
         self.per_app_var = tk.BooleanVar(value=bool(self.cfg.get("per_app_prompts", False)))
-        alpha = self.cfg.get("window_alpha", WINDOW_ALPHA)
-        alpha = max(MIN_WINDOW_ALPHA, min(MAX_WINDOW_ALPHA, float(alpha)))
-        self.alpha_var = tk.IntVar(value=int(round(alpha * 100)))
 
         for var in (
             self.provider_var,
@@ -1106,30 +1142,25 @@ class VoxkeysApp:
         self._row_label(gpustack_key_row, "GPUStack 金鑰")
         self._entry(gpustack_key_row, self.gpustack_key_var)
 
-        self._section_header(parent, "外觀", top_pad=4)
-        alpha_row = tk.Frame(parent, bg=C["base"])
-        alpha_row.pack(fill="x")
-        tk.Label(alpha_row, text="不透明度", font=FONT_BODY, bg=C["base"],
-                 fg=C["text"]).pack(side="left")
-        self.alpha_value = tk.Label(alpha_row, text=f"{self.alpha_var.get()}%",
-                                    font=FONT_SMALL, bg=C["base"], fg=C["subtext"],
-                                    width=5, anchor="e")
-        self.alpha_value.pack(side="right")
-        Slider(alpha_row, self.alpha_var, 70, 100,
-               self._on_alpha_change).pack(side="right", padx=(0, 4))
-
         self._sync_stt_fields_visibility()
         self._sync_polish_fields_visibility()
 
+    def _settings_wheel(self, event):
+        sc = getattr(self, "_settings_canvas", None)
+        if not self.showing_settings or sc is None or not sc.winfo_exists():
+            return None
+        step = -1 if event.num == 4 or getattr(event, "delta", 0) > 0 else 1
+        sc.yview_scroll(step * 2, "units")
+        return "break"
+
     def _fit_settings_height(self):
-        """Size the window to the form; the provider choices show and hide
-        fields, so a fixed height either clips or leaves a gap."""
-        form = getattr(self, "_settings_form", None)
-        if form is None or not form.winfo_exists():
+        """Fields show and hide with the provider choices; keep the scroll
+        range in step with the form."""
+        sc = getattr(self, "_settings_canvas", None)
+        if sc is None or not sc.winfo_exists():
             return
         self.root.update_idletasks()
-        h = HEADER_H + form.winfo_reqheight() + 14
-        self._set_window_height(min(h, self.root.winfo_screenheight() - 80))
+        sc.configure(scrollregion=sc.bbox("all"))
 
     def _on_stt_change(self, event=None):
         self._sync_stt_fields_visibility()
@@ -1644,10 +1675,10 @@ class VoxkeysApp:
     # ─── Utilities ───────────────────────────────────────────────────────────
 
     def _clear(self):
-        # The capsule is a Toplevel child of root; page switches must not destroy it.
-        for w in self.root.winfo_children():
-            if w is not getattr(self, "capsule", None):
-                w.destroy()
+        # Pages live in the shell; the capsule and tooltips are root children
+        # and must survive page switches.
+        for w in self.shell.winfo_children():
+            w.destroy()
 
     def _on_close(self):
         if hasattr(self, "listener"):
