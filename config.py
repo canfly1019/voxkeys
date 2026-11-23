@@ -36,6 +36,7 @@ DEFAULT_CONFIG = {
     "capsule_visible": True,
     "capsule_x": None,
     "capsule_y": None,
+    "capsule_w": 260,
 }
 
 

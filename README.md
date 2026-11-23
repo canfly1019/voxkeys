@@ -39,7 +39,7 @@ pip install -r requirements.txt
 python3 gui.py
 ```
 
-A small floating capsule stays on top of other windows and shows the current status (idle, recording with a timer, transcribing with a `+N` queue badge, then the pasted text for 2 seconds). Drag it anywhere; the position is remembered. Click it to open or close the full panel, right-click for a menu. The "Capsule" checkbox in the panel shows or hides it; while it is hidden the panel stays open, so Voxkeys never disappears entirely. Use the settings page to configure provider, API key, model, etc.
+A small floating capsule stays on top of other windows and shows the current status (idle, recording with a timer, transcribing with a `+N` queue badge, then the pasted text for 2 seconds). Drag it anywhere and drag its right edge to make it wider or narrower; position and width are remembered. Only one copy runs at a time: launching again opens the running panel instead of adding a second F9 listener. Click it to open or close the full panel, right-click for a menu. The "Capsule" checkbox in the panel shows or hides it; while it is hidden the panel stays open, so Voxkeys never disappears entirely. Use the settings page to configure provider, API key, model, etc.
 
 ### CLI Mode
 

@@ -8,10 +8,13 @@ new segments while previous ones are still being transcribed and polished.
 Completed rows are clickable to recopy the polished text to the clipboard.
 """
 
+import fcntl
 import os
+import signal
 import subprocess
 import time
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import ttk
 
 import voxkeys
@@ -19,6 +22,7 @@ from config import load_config, save_config
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_PATH = os.path.join(SCRIPT_DIR, "assets", "voxkeys.png")
+LOCK_PATH = os.path.expanduser("~/.config/voxkeys/gui.lock")
 
 # ─── Colors ─────────────────────────────────────────────────────────────────
 
@@ -133,6 +137,8 @@ PULSE_PERIOD_MS = 520
 
 PREVIEW_MAX = 30  # visual cells (CJK counts as 2)
 MAX_ROWS = 3
+CAPSULE_DEFAULT_W = 260
+CAPSULE_MIN_W = 120
 WINDOW_W = 340
 WINDOW_H = 370  # fits the GPUStack endpoint/model controls on the settings page
 WINDOW_ALPHA = 0.92
@@ -1311,7 +1317,8 @@ class VoxkeysApp:
     CAPSULE_FLASH_MS = 2000
 
     def _build_capsule(self):
-        """Small always-on-top status pill. Drag to move, click to open the panel."""
+        """Always-on-top status pill. Drag to move, drag the right edge to
+        resize, click to open the panel."""
         cap = tk.Toplevel(self.root)
         cap.wm_overrideredirect(True)
         cap.attributes("-topmost", True)
@@ -1329,12 +1336,22 @@ class VoxkeysApp:
         self._cap_tick_after = None
         self._cap_spin_i = 0
         self._cap_drag = None
+        self._cap_resize = None
+        self._cap_w = max(CAPSULE_MIN_W, int(self.cfg.get("capsule_w") or CAPSULE_DEFAULT_W))
+        self._cap_font = tkfont.Font(root=self.root, font=FONT_SMALL)
 
+        # Right-edge grip: drag it to make the capsule wider or narrower.
+        grip = tk.Frame(cap, bg=C["surface1"], width=6, cursor="sb_h_double_arrow")
+        grip.pack(side="right", fill="y")
+        grip.bind("<ButtonPress-1>", self._cap_resize_press)
+        grip.bind("<B1-Motion>", self._cap_resize_motion)
+        grip.bind("<ButtonRelease-1>", self._cap_resize_release)
         inner = tk.Frame(cap, bg=C["base"], padx=12, pady=6)
-        inner.pack()
+        inner.pack(side="left", fill="both", expand=True)
         self._cap_dot = tk.Label(inner, font=FONT_BODY_BOLD, bg=C["base"])
         self._cap_dot.pack(side="left")
-        self._cap_lbl = tk.Label(inner, font=FONT_SMALL, bg=C["base"], fg=C["text"])
+        self._cap_lbl = tk.Label(inner, font=FONT_SMALL, bg=C["base"], fg=C["text"],
+                                 anchor="w")
         self._cap_lbl.pack(side="left", padx=(6, 0))
         self._cap_badge = tk.Label(inner, font=FONT_TINY_BOLD, bg=C["mauve"],
                                    fg=C["crust"], padx=6)
@@ -1354,11 +1371,13 @@ class VoxkeysApp:
 
         self._cap_render()
         cap.update_idletasks()
+        self._cap_h = cap.winfo_reqheight()
         x, y = self.cfg.get("capsule_x"), self.cfg.get("capsule_y")
         if x is None or y is None:
-            x = (cap.winfo_screenwidth() - cap.winfo_reqwidth()) // 2
-            y = cap.winfo_screenheight() - cap.winfo_reqheight() - 72
+            x = (cap.winfo_screenwidth() - self._cap_w) // 2
+            y = cap.winfo_screenheight() - self._cap_h - 72
         self._cap_pos = (int(x), int(y))
+        self._cap_place()
         if self.cfg.get("capsule_visible", True):
             self._show_capsule()
         else:
@@ -1371,7 +1390,7 @@ class VoxkeysApp:
             self._cap_jobs.pop(jid, None)
             icon, color, label = PHASE_VISUALS[phase]
             text = label or e.get("error") or e.get("polished_text") or e.get("raw_text") or ""
-            self._cap_flash = (icon, color, self._truncate(text, 34))
+            self._cap_flash = (icon, color, text.strip().replace("\n", " "))
             if self._cap_flash_after:
                 self.root.after_cancel(self._cap_flash_after)
             self._cap_flash_after = self.root.after(self.CAPSULE_FLASH_MS, self._cap_end_flash)
@@ -1422,12 +1441,44 @@ class VoxkeysApp:
         border = C["surface1"] if color == "overlay0" else C[color]
         self.capsule.configure(highlightbackground=border, highlightcolor=border)
         self._cap_dot.config(text=dot, fg=C[color])
-        self._cap_lbl.config(text=text, fg=C["subtext"] if color == "overlay0" else C["text"])
         if badge:
             self._cap_badge.config(text=badge)
             self._cap_badge.pack(side="left", padx=(8, 0))
         else:
             self._cap_badge.pack_forget()
+        # Fit the text to the chosen width instead of growing the capsule.
+        avail = self._cap_w - 6 - 24 - 6 - self._cap_font.measure("●") - 8
+        if badge:
+            avail -= self._cap_font.measure(badge) + 20
+        self._cap_lbl.config(text=self._fit_px(text, avail),
+                             fg=C["subtext"] if color == "overlay0" else C["text"])
+
+    def _fit_px(self, text, avail):
+        if self._cap_font.measure(text) <= avail:
+            return text
+        while text and self._cap_font.measure(text + "…") > avail:
+            text = text[:-1]
+        return text + "…"
+
+    def _cap_place(self):
+        self.capsule.geometry(f"{self._cap_w}x{self._cap_h}+{self._cap_pos[0]}+{self._cap_pos[1]}")
+
+    def _cap_resize_press(self, event):
+        self._cap_resize = (event.x_root, self._cap_w)
+
+    def _cap_resize_motion(self, event):
+        if not self._cap_resize:
+            return
+        x0, w0 = self._cap_resize
+        self._cap_w = max(CAPSULE_MIN_W, w0 + event.x_root - x0)
+        self._cap_place()
+        self._cap_render()
+
+    def _cap_resize_release(self, _event):
+        if self._cap_resize:
+            self._cap_resize = None
+            self.cfg["capsule_w"] = self._cap_w
+            save_config({"capsule_w": self._cap_w})
 
     def _cap_press(self, event):
         self._cap_drag = (event.x_root, event.y_root,
@@ -1442,7 +1493,7 @@ class VoxkeysApp:
             return  # small jitter still counts as a click
         self._cap_drag = (x0, y0, wx, wy, True)
         self._cap_pos = (wx + dx, wy + dy)
-        self.capsule.geometry(f"+{self._cap_pos[0]}+{self._cap_pos[1]}")
+        self._cap_place()
 
     def _cap_release(self, _event):
         drag, self._cap_drag = self._cap_drag, None
@@ -1485,8 +1536,7 @@ class VoxkeysApp:
         self.capsule.lift()
         # Tk maps an override-redirect window at +0+0 and drops a geometry set
         # before the map finishes, so place it once the map has settled.
-        self.capsule.after(60, lambda: self.capsule.geometry(
-            f"+{self._cap_pos[0]}+{self._cap_pos[1]}"))
+        self.capsule.after(60, self._cap_place)
 
     def _set_capsule_visible(self, visible):
         self.cfg["capsule_visible"] = bool(visible)
@@ -1524,6 +1574,36 @@ class VoxkeysApp:
         self.root.mainloop()
 
 
+def _claim_single_instance():
+    """Return True if this is the only running GUI.
+
+    Every instance owns its own F9 listener, so a second copy would record and
+    paste each dictation twice. A second launch instead asks the running copy
+    (SIGUSR1) to open its panel and then exits.
+    """
+    os.makedirs(os.path.dirname(LOCK_PATH), mode=0o700, exist_ok=True)
+    fh = open(LOCK_PATH, "a+")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.seek(0)
+        try:
+            os.kill(int(fh.read().strip()), signal.SIGUSR1)
+        except (ValueError, OSError):
+            pass
+        return False
+    fh.seek(0)
+    fh.truncate()
+    fh.write(str(os.getpid()))
+    fh.flush()
+    globals()["_lock_handle"] = fh  # keep the lock for the process lifetime
+    return True
+
+
 if __name__ == "__main__":
+    if not _claim_single_instance():
+        print("Voxkeys is already running; opened its panel instead.", flush=True)
+        raise SystemExit(0)
     app = VoxkeysApp()
+    signal.signal(signal.SIGUSR1, lambda *_: app.root.after(0, app._open_panel))
     app.run()
