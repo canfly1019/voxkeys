@@ -39,8 +39,11 @@ C = {
     "yellow":   "#ffd166",
     "red":      "#ff8fa3",
     "blue":     "#a996ff",
-    "mauve":    "#a855f7",
-    "lavender": "#c7a6ff",
+    "mauve":    "#9486c0",  # accent: switches, outlines, badges
+    "lavender": "#c9bfe6",
+    # The logo's own gradient: a muted lavender, not neon.
+    "brand_a":  "#5b4b8a",
+    "brand_b":  "#7a6a9e",
 }
 
 FONT_FAMILY = "Noto Sans"
@@ -142,7 +145,7 @@ CAPSULE_MIN_W = 120
 CAPSULE_FONT = (FONT_FAMILY, 11)
 WINDOW_W = 340
 WINDOW_H = 370  # fits the GPUStack endpoint/model controls on the settings page
-WINDOW_ALPHA = 0.92
+WINDOW_ALPHA = 1.0
 MIN_WINDOW_ALPHA = 0.70
 MAX_WINDOW_ALPHA = 1.0
 TOOLTIP_DELAY_MS = 450
@@ -195,6 +198,61 @@ def menu_chip(parent, text, *, fg=None, bg=None, font=FONT_SMALL_BOLD):
         highlightcolor=C["blue"], takefocus=True,
     )
 
+def blend(a, b, t):
+    """Mix two #rrggbb colors; t=0 gives a, t=1 gives b."""
+    ca = [int(a[i:i + 2], 16) for i in (1, 3, 5)]
+    cb = [int(b[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(round(x + (y - x) * t) for x, y in zip(ca, cb))
+
+
+class ToggleSwitch(tk.Frame):
+    """Pill switch with a label, in place of Tk's dated square checkbox."""
+
+    W, H = 34, 18
+
+    def __init__(self, parent, text, variable, command, *, font=FONT_BODY, fg=None):
+        super().__init__(parent, bg=C["base"], cursor="hand2")
+        self.var, self.command = variable, command
+        self.cv = tk.Canvas(self, width=self.W, height=self.H, bg=C["base"], bd=0,
+                            highlightthickness=0, cursor="hand2", takefocus=True)
+        self.cv.pack(side="left")
+        self.lbl = tk.Label(self, text=text, font=font, bg=C["base"],
+                            fg=fg or C["text"], cursor="hand2")
+        self.lbl.pack(side="left", padx=(6, 0))
+        for w in (self, self.cv, self.lbl):
+            w.bind("<Button-1>", self._flip)
+        self.cv.bind("<space>", self._flip)
+        # Redraw on any change, including ones made elsewhere (capsule menu).
+        self._trace = variable.trace_add("write", lambda *_: self.draw())
+        self.bind("<Destroy>", self._untrace)
+        self.draw()
+
+    def _untrace(self, event):
+        if event.widget is self:
+            try:
+                self.var.trace_remove("write", self._trace)
+            except tk.TclError:
+                pass
+
+    def _flip(self, _event=None):
+        self.var.set(not self.var.get())
+        self.command()
+
+    def draw(self):
+        if not self.cv.winfo_exists():
+            return
+        on = bool(self.var.get())
+        w, h = self.W, self.H
+        track = C["mauve"] if on else C["surface1"]
+        cv = self.cv
+        cv.delete("all")
+        cv.create_oval(0, 0, h - 1, h - 1, fill=track, outline=track)
+        cv.create_oval(w - h, 0, w - 1, h - 1, fill=track, outline=track)
+        cv.create_rectangle(h / 2, 0, w - h / 2, h - 1, fill=track, outline=track)
+        kx = w - h + 2 if on else 2
+        cv.create_oval(kx, 2, kx + h - 5, h - 3, fill="white", outline="white")
+
+
 # ─── Main Application ────────────────────────────────────────────────────────
 
 class VoxkeysApp:
@@ -236,6 +294,13 @@ class VoxkeysApp:
         voxkeys.set_event_callback(self._on_event)
 
         self.missing_deps = voxkeys.check_dependencies()
+
+        # Scaled copies of the app icon; kept on self so Tk does not drop them.
+        try:
+            self._logo_banner = tk.PhotoImage(file=ICON_PATH).subsample(4)  # 32px
+            self._logo_cap = tk.PhotoImage(file=ICON_PATH).subsample(6)     # ~21px
+        except tk.TclError:
+            self._logo_banner = self._logo_cap = None
 
         self._build_main_page()
         self._build_capsule()
@@ -284,23 +349,35 @@ class VoxkeysApp:
     def _build_main_page(self):
         self._clear()
 
-        # Title bar
-        header = tk.Frame(self.root, bg=C["base"])
-        header.pack(fill="x", padx=16, pady=(14, 0))
-
-        tk.Label(header, text="Voxkeys", font=FONT_TITLE,
-                 bg=C["base"], fg=C["text"]).pack(side="left")
-
-        btn_frame = tk.Frame(header, bg=C["base"])
-        btn_frame.pack(side="right")
-
-        make_button(btn_frame, "⚙", self._build_settings_page,
-                    font=(FONT_FAMILY, 13)).pack(side="left", padx=(0, 8))
-        make_button(btn_frame, "—", self._collapse_panel,
-                    font=(FONT_FAMILY, 13)).pack(side="left")
-
-        # Separator
-        tk.Frame(self.root, bg=C["surface0"], height=1).pack(fill="x", padx=16, pady=8)
+        # Brand banner: the logo's gradient, carrying the title and actions.
+        bh = 58
+        banner = tk.Canvas(self.root, width=WINDOW_W, height=bh, bd=0,
+                           highlightthickness=0, bg=C["brand_a"])
+        banner.pack(fill="x")
+        for x in range(0, WINDOW_W, 2):
+            banner.create_line(x, 0, x, bh, width=2,
+                               fill=blend(C["brand_a"], C["brand_b"], x / WINDOW_W))
+        title_x = 18
+        if self._logo_banner:
+            banner.create_image(16, bh // 2, image=self._logo_banner, anchor="w")
+            title_x = 58
+        banner.create_text(title_x, bh // 2, text="Voxkeys", anchor="w",
+                           fill="white", font=FONT_TITLE)
+        actions = (("—", self._collapse_panel), ("⚙", self._build_settings_page))
+        for i, (glyph, cmd) in enumerate(actions):
+            x = WINDOW_W - 26 - i * 38
+            rest = blend(C["brand_a"], C["brand_b"], x / WINDOW_W)
+            hover = blend(rest, "#ffffff", 0.22)
+            tag = f"act{i}"
+            banner.create_oval(x - 16, bh // 2 - 16, x + 16, bh // 2 + 16,
+                               fill=rest, outline="", tags=(tag, tag + "bg"))
+            banner.create_text(x, bh // 2, text=glyph, fill="white",
+                               font=(FONT_FAMILY, 13), tags=tag)
+            banner.tag_bind(tag, "<Button-1>", lambda _e, c=cmd: c())
+            banner.tag_bind(tag, "<Enter>", lambda _e, t=tag, c=hover: (
+                banner.itemconfig(t + "bg", fill=c), banner.config(cursor="hand2")))
+            banner.tag_bind(tag, "<Leave>", lambda _e, t=tag, c=rest: (
+                banner.itemconfig(t + "bg", fill=c), banner.config(cursor="")))
 
         # Missing-deps banner takes over the body area entirely
         if self.missing_deps:
@@ -329,36 +406,21 @@ class VoxkeysApp:
         ai_frame = tk.Frame(self.root, bg=C["base"])
         ai_frame.pack(fill="x", padx=16, pady=(6, 12))
 
-        tk.Frame(ai_frame, bg=C["surface0"], height=1).pack(fill="x", pady=(0, 10))
-
         toggle_row = tk.Frame(ai_frame, bg=C["base"])
         toggle_row.pack(fill="x")
 
         self.ai_var = tk.BooleanVar(value=self.use_ai)
-        self.ai_check = tk.Checkbutton(
-            toggle_row, text="AI Polish", variable=self.ai_var,
-            font=FONT_BODY, bg=C["base"], fg=C["text"],
-            selectcolor=C["surface0"], activebackground=C["base"],
-            activeforeground=C["text"], cursor="hand2",
-            highlightthickness=1, highlightbackground=C["surface0"],
-            highlightcolor=C["blue"], padx=4, pady=4, takefocus=True,
-            command=self._toggle_ai,
-        )
+        self.ai_check = ToggleSwitch(toggle_row, "AI Polish", self.ai_var, self._toggle_ai)
         self.ai_check.pack(side="left")
 
         self.per_app_main_var = tk.BooleanVar(
             value=bool(self.cfg.get("per_app_prompts", False))
         )
-        self.per_app_main_check = tk.Checkbutton(
-            toggle_row, text="App Tone", variable=self.per_app_main_var,
-            font=FONT_SMALL, bg=C["base"], fg=C["text"],
-            selectcolor=C["surface0"], activebackground=C["base"],
-            activeforeground=C["text"], cursor="hand2",
-            highlightthickness=1, highlightbackground=C["surface0"],
-            highlightcolor=C["blue"], padx=4, pady=4, takefocus=True,
-            command=self._toggle_per_app_prompts,
+        self.per_app_main_check = ToggleSwitch(
+            toggle_row, "App Tone", self.per_app_main_var,
+            self._toggle_per_app_prompts, font=FONT_SMALL,
         )
-        self.per_app_main_check.pack(side="left", padx=(8, 0))
+        self.per_app_main_check.pack(side="left", padx=(12, 0))
         self._sync_app_tone_state()
 
         # Language flow controls: input menu -> output menu.
@@ -367,7 +429,7 @@ class VoxkeysApp:
         self.output_lang_chip = menu_chip(lang_frame, self._output_lang_text(), fg=C["lavender"])
         self._build_output_lang_menu()
         self.output_lang_chip.pack(side="right")
-        tk.Label(lang_frame, text="->", font=FONT_SMALL_BOLD,
+        tk.Label(lang_frame, text="→", font=FONT_SMALL_BOLD,
                  bg=C["base"], fg=C["overlay0"]).pack(side="right", padx=4)
         self.input_lang_chip = menu_chip(lang_frame, self._input_lang_text(), fg=C["lavender"])
         self._build_input_lang_menu()
@@ -376,13 +438,10 @@ class VoxkeysApp:
         opacity_row = tk.Frame(ai_frame, bg=C["base"])
         opacity_row.pack(fill="x", pady=(8, 0))
         self.capsule_var = tk.BooleanVar(value=bool(self.cfg.get("capsule_visible", True)))
-        tk.Checkbutton(
-            opacity_row, text="Capsule", variable=self.capsule_var,
-            font=FONT_TINY, bg=C["base"], fg=C["overlay0"],
-            selectcolor=C["surface0"], activebackground=C["base"],
-            activeforeground=C["text"], cursor="hand2",
-            highlightthickness=0, padx=0, pady=0, takefocus=True,
-            command=lambda: self._set_capsule_visible(self.capsule_var.get()),
+        ToggleSwitch(
+            opacity_row, "Capsule", self.capsule_var,
+            lambda: self._set_capsule_visible(self.capsule_var.get()),
+            font=FONT_TINY, fg=C["overlay0"],
         ).pack(side="left", padx=(0, 10))
         tk.Label(opacity_row, text="Opacity", font=FONT_TINY,
                  bg=C["base"], fg=C["overlay0"]).pack(side="left")
@@ -447,8 +506,7 @@ class VoxkeysApp:
             return
         if self.use_ai:
             if not self.per_app_main_check.winfo_manager():
-                self.per_app_main_check.pack(side="left", padx=(8, 0))
-            self.per_app_main_check.config(state="normal", fg=C["text"], cursor="hand2")
+                self.per_app_main_check.pack(side="left", padx=(12, 0))
         else:
             self.per_app_main_check.pack_forget()
 
@@ -963,7 +1021,7 @@ class VoxkeysApp:
         make_button(self.settings_actions, "Cancel", self._cancel_settings_changes,
                     font=FONT_TINY_BOLD).pack(side="right", padx=(0, 8))
 
-        tk.Frame(self.root, bg=C["surface0"], height=1).pack(fill="x", padx=16, pady=8)
+        tk.Frame(self.root, bg=C["mauve"], height=2).pack(fill="x", pady=(10, 8))
 
         form = tk.Frame(self.root, bg=C["base"])
         form.pack(fill="both", expand=True, padx=16, pady=(0, 14))
@@ -1328,7 +1386,7 @@ class VoxkeysApp:
         except tk.TclError:
             pass
         cap.configure(bg=C["base"], highlightthickness=2,
-                      highlightbackground=C["surface1"], highlightcolor=C["surface1"])
+                      highlightbackground=C["mauve"], highlightcolor=C["mauve"])
         self.capsule = cap
         self._cap_jobs = {}           # job_id -> phase, busy jobs only
         self._cap_rec_start = None
@@ -1342,15 +1400,19 @@ class VoxkeysApp:
         self._cap_font = tkfont.Font(root=self.root, font=CAPSULE_FONT)
 
         # Right-edge grip: drag it to make the capsule wider or narrower.
-        grip = tk.Label(cap, text="⇔", font=(FONT_FAMILY, 10, "bold"), bg=C["surface1"],
-                        fg=C["subtext"], padx=4, cursor="sb_h_double_arrow")
+        grip = tk.Label(cap, text="⇔", font=(FONT_FAMILY, 10, "bold"), bg=C["base"],
+                        fg=C["lavender"], padx=6, cursor="sb_h_double_arrow")
         grip.pack(side="right", fill="y")
         grip.bind("<ButtonPress-1>", self._cap_resize_press)
         grip.bind("<B1-Motion>", self._cap_resize_motion)
         grip.bind("<ButtonRelease-1>", self._cap_resize_release)
-        # Left handle: a visible cue that the capsule can be dragged around.
-        handle = tk.Label(cap, text="⠿", font=(FONT_FAMILY, 11, "bold"), bg=C["surface0"],
-                          fg=C["subtext"], padx=5, cursor="fleur")
+        # Left handle: the app logo on a brand block; it is also the drag grip.
+        if self._logo_cap:
+            handle = tk.Label(cap, image=self._logo_cap, bg=C["brand_a"],
+                              padx=6, cursor="fleur")
+        else:
+            handle = tk.Label(cap, text="⠿", font=(FONT_FAMILY, 11, "bold"),
+                              bg=C["brand_a"], fg="white", padx=5, cursor="fleur")
         handle.pack(side="left", fill="y")
         self._cap_chrome = (grip, handle)
         inner = tk.Frame(cap, bg=C["base"], padx=10, pady=3, cursor="fleur")
@@ -1448,8 +1510,8 @@ class VoxkeysApp:
         elif self._cap_flash:
             dot, color, text = self._cap_flash
         else:
-            dot, color, text = "●", "overlay0", f"{self._hotkey_text()}  Dictate"
-        border = C["surface1"] if color == "overlay0" else C[color]
+            dot, color, text = "●", "mauve", f"{self._hotkey_text()}  Dictate"
+        border = C[color]
         self.capsule.configure(highlightbackground=border, highlightcolor=border)
         self._cap_dot.config(text=dot, fg=C[color])
         if badge:
@@ -1465,7 +1527,7 @@ class VoxkeysApp:
         if badge:
             avail -= self._cap_font.measure(badge) + 20
         self._cap_lbl.config(text=self._fit_px(text, avail),
-                             fg=C["subtext"] if color == "overlay0" else C["text"])
+                             fg=C["subtext"] if color == "mauve" else C["text"])
 
     def _fit_px(self, text, avail):
         if self._cap_font.measure(text) <= avail:
