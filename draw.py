@@ -191,8 +191,10 @@ def round_window(widget, w, h, r, *, own=False, inset=0):
         r = min(r, (w - 2 * s) // 2, (h - 2 * s) // 2)
         pm.fill_rectangle(gc, r + s, s, w - 2 * (r + s), h - 2 * s)
         pm.fill_rectangle(gc, s, r + s, w - 2 * s, h - 2 * (r + s))
-        for x, y in ((s, s), (w - 2 * (r + s), s),
-                     (s, h - 2 * (r + s)), (w - 2 * (r + s), h - 2 * (r + s))):
+        # Right/bottom arcs start at w/h - s - 2r so the cut mirrors the
+        # left/top; w - 2*(r+s) would clip `s` extra px on the right end.
+        for x, y in ((s, s), (w - s - 2 * r, s),
+                     (s, h - s - 2 * r), (w - s - 2 * r, h - s - 2 * r)):
             pm.fill_arc(gc, x, y, 2 * r, 2 * r, 0, 360 * 64)
         win.shape_mask(shape.SO.Set, shape.SK.Bounding, 0, 0, pm)
         gc.free()
