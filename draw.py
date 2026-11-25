@@ -162,15 +162,19 @@ def _wrapper(widget):
     return d, win.query_tree().parent
 
 
-def round_window(widget, w, h, r, *, own=False):
+def round_window(widget, w, h, r, *, own=False, inset=0):
     """Clip a window to a rounded rectangle via the X SHAPE extension.
 
     By default the toplevel's wrapper is shaped; `own` shapes the widget's
     own X window instead (used for the inner frame that leaves a 1px ring of
     the toplevel's background as a border).
 
-    The mask is 1-bit, so the corner edge is not antialiased; on a dark
-    window that is hardly visible at this radius.
+    The mask is 1-bit, so the cut edge is not antialiased. When the window
+    carries its own antialiased border, set `inset` to land the cut on the
+    border's centerline: outside the cut is clipped away, and the border's
+    inner half ends the pill in full color, so the staircase is invisible.
+    Without it, the cut slices the border's outer edge and leaves a fuzzy
+    hairline along the curve.
     """
     try:
         from Xlib.ext import shape
@@ -183,10 +187,12 @@ def round_window(widget, w, h, r, *, own=False):
         gc = pm.create_gc(foreground=0, background=0)
         pm.fill_rectangle(gc, 0, 0, w, h)
         gc.change(foreground=1)
-        r = min(r, w // 2, h // 2)
-        pm.fill_rectangle(gc, r, 0, w - 2 * r, h)
-        pm.fill_rectangle(gc, 0, r, w, h - 2 * r)
-        for x, y in ((0, 0), (w - 2 * r, 0), (0, h - 2 * r), (w - 2 * r, h - 2 * r)):
+        s = inset
+        r = min(r, (w - 2 * s) // 2, (h - 2 * s) // 2)
+        pm.fill_rectangle(gc, r + s, s, w - 2 * (r + s), h - 2 * s)
+        pm.fill_rectangle(gc, s, r + s, w - 2 * s, h - 2 * (r + s))
+        for x, y in ((s, s), (w - 2 * (r + s), s),
+                     (s, h - 2 * (r + s)), (w - 2 * (r + s), h - 2 * (r + s))):
             pm.fill_arc(gc, x, y, 2 * r, 2 * r, 0, 360 * 64)
         win.shape_mask(shape.SO.Set, shape.SK.Bounding, 0, 0, pm)
         gc.free()

@@ -129,10 +129,15 @@ PULSE_PERIOD_MS = 520
 MAX_ROWS = 3
 ROW_H = 36
 CAPSULE_DEFAULT_W = 260
-CAPSULE_MIN_W = 160
 CAPSULE_H = 34
 CAPSULE_GRIP = 12  # right-end strip that resizes instead of moving
 CAPSULE_FONT = FONT_BODY
+# Content block: logo, two 5px gaps, 14px dot, text. Centered as one unit.
+CAP_LOGO = CAPSULE_H - 16
+CAP_GAP = 5
+CAP_DOT = 14
+CAP_CONTENT_W = CAP_LOGO + 2 * CAP_GAP + CAP_DOT
+CAP_EDGE = 10  # left/right margin inside the capsule
 WINDOW_W = 260
 WINDOW_RADIUS = 14
 HEADER_H = 56
@@ -1433,10 +1438,14 @@ class VoxkeysApp:
         self._cap_drag = None
         self._cap_resize = None
         self._cap_shaped_w = None     # width the window shape was last cut for
-        self._cap_w = max(CAPSULE_MIN_W, int(self.cfg.get("capsule_w") or CAPSULE_DEFAULT_W))
-        self._cap_h = CAPSULE_H
         self._cap_font = tkfont.Font(root=self.root, font=CAPSULE_FONT)
         self._cap_badge_font = tkfont.Font(root=self.root, font=FONT_TINY_BOLD)
+        # Minimum width fits the whole idle line so centered content never
+        # wraps to an unreadable fragment; longer texts truncate, not grow.
+        self._cap_min_w = CAP_EDGE + CAP_CONTENT_W + self._cap_font.measure(
+            f"{self._hotkey_text()}  開始聽寫") + CAP_EDGE
+        self._cap_w = max(self._cap_min_w, int(self.cfg.get("capsule_w") or CAPSULE_DEFAULT_W))
+        self._cap_h = CAPSULE_H
 
         cv = tk.Canvas(cap, width=self._cap_w, height=CAPSULE_H, bg=C["base"],
                        bd=0, highlightthickness=0, cursor="fleur")
@@ -1444,10 +1453,13 @@ class VoxkeysApp:
         self._cap_cv = cv
         mid = CAPSULE_H // 2
         self._cap_bg = cv.create_image(0, 0, anchor="nw")
-        # Inset so the square logo's corners clear the pill's round end.
-        cv.create_image(12, mid, anchor="w", image=draw.logo(ICON_PATH, CAPSULE_H - 16, C["base"]))
-        self._cap_dot = cv.create_image(CAPSULE_H + 8, mid)
-        self._cap_lbl = cv.create_text(CAPSULE_H + 20, mid, anchor="w", font=self._cap_font)
+        # Inset so the square logo's corners clear the pill's round end;
+        # _cap_render recenters it with the rest of the content.
+        self._cap_logo = cv.create_image(12, mid, anchor="w",
+                                         image=draw.logo(ICON_PATH, CAP_LOGO, C["base"]))
+        self._cap_dot = cv.create_image(CAP_LOGO + CAP_GAP, mid, anchor="w")
+        self._cap_lbl = cv.create_text(CAP_LOGO + 2 * CAP_GAP + CAP_DOT, mid,
+                                       anchor="w", font=self._cap_font)
         self._cap_badge_bg = cv.create_image(0, mid, anchor="e", state="hidden")
         self._cap_badge = cv.create_text(0, mid, font=self._cap_badge_font,
                                          fill=C["crust"], state="hidden")
@@ -1536,24 +1548,30 @@ class VoxkeysApp:
             kind, color, text = "dot", "mauve", f"{self._hotkey_text()}  開始聽寫"
 
         cv, w, h = self._cap_cv, self._cap_w, CAPSULE_H
+        mid = h // 2
         cv.itemconfig(self._cap_bg, image=draw.rounded_rect(
             w, h, h // 2, C["base"], C["crust"], outline=C[color], width=1.5))
         cv.itemconfig(self._cap_dot, image=draw.status_icon(
-            kind, C[color], C["base"], frame=self._cap_spin_i))
-        right = w - 12
+            kind, C[color], C["base"], size=CAP_DOT, frame=self._cap_spin_i))
+        badge_w = self._cap_badge_font.measure(badge) + 14 if badge else 0
+        # Center logo + dot + text as one unit; the badge keeps the right end.
+        text = fit_px(self._cap_font, text,
+                      w - 2 * CAP_EDGE - badge_w - (6 if badge else 0) - CAP_CONTENT_W)
+        left = (w - badge_w - (CAP_CONTENT_W + self._cap_font.measure(text))) // 2
+        cv.coords(self._cap_logo, left, mid)
+        cv.coords(self._cap_dot, left + CAP_LOGO + CAP_GAP, mid)
+        cv.coords(self._cap_lbl, left + CAP_LOGO + 2 * CAP_GAP + CAP_DOT, mid)
         if badge:
-            bw = self._cap_badge_font.measure(badge) + 14
+            right = w - CAP_EDGE
             cv.itemconfig(self._cap_badge_bg, state="normal",
-                          image=draw.rounded_rect(bw, 18, 9, C["mauve"], C["base"]))
-            cv.coords(self._cap_badge_bg, right, h // 2)
+                          image=draw.rounded_rect(badge_w, 18, 9, C["mauve"], C["base"]))
+            cv.coords(self._cap_badge_bg, right, mid)
             cv.itemconfig(self._cap_badge, text=badge, state="normal")
-            cv.coords(self._cap_badge, right - bw / 2, h // 2)
-            right -= bw + 8
+            cv.coords(self._cap_badge, right - badge_w / 2, mid)
         else:
             cv.itemconfig(self._cap_badge_bg, state="hidden")
             cv.itemconfig(self._cap_badge, state="hidden")
-        avail = right - (CAPSULE_H + 20)
-        cv.itemconfig(self._cap_lbl, text=fit_px(self._cap_font, text, avail),
+        cv.itemconfig(self._cap_lbl, text=text,
                       fill=C["subtext"] if color == "mauve" else C["text"])
 
     def _cap_clamp(self, x, y):
@@ -1580,7 +1598,11 @@ class VoxkeysApp:
         self._cap_cv.config(width=w)
         self.capsule.geometry(f"{w}x{h}+{self._cap_pos[0]}+{self._cap_pos[1]}")
         if self._cap_shaped_w != w and self.capsule.winfo_ismapped():
-            draw.round_window(self.capsule, w, h, h // 2)
+            # Cut the 1-bit mask 1px inside the pill edge (radius h//2-1):
+            # the 1.5px stroke's outer antialiased fade pixel is clipped, so
+            # the window edge ends in full stroke color with no faint
+            # hairline. Verified against no-inset on the same pill.
+            draw.round_window(self.capsule, w, h, h // 2 - 1, inset=1)
             self._cap_shaped_w = w
 
     def _cap_on_grip(self, event):
@@ -1601,7 +1623,7 @@ class VoxkeysApp:
         if self._cap_resize:
             x0, w0 = self._cap_resize
             right = self.root.winfo_screenwidth() - self._cap_pos[0]
-            self._cap_w = max(CAPSULE_MIN_W, min(right, w0 + event.x_root - x0))
+            self._cap_w = max(self._cap_min_w, min(right, w0 + event.x_root - x0))
             self._cap_place()
             self._cap_render()
             return
